@@ -151,6 +151,21 @@ cargo fmt --all
 RUSTMAP_DUMP=/tmp cargo test -p rustmap-render --test test_pattern   # writes the patterns as .ppm
 ```
 
+## Releases
+
+Downloads live on the repository's **Releases** page. To make one:
+
+1. Set the version in `Cargo.toml` (`[workspace.package] version`) and commit.
+2. Tag and push: `git tag v0.1.0 && git push origin v0.1.0`.
+3. The *Release* workflow builds every platform and publishes the release with:
+   - `RUSTMAP-<version>-macos-universal.zip`: `RUSTMAP.app` for Apple Silicon and Intel, ad-hoc signed (not notarized: first launch is right-click > Open).
+   - `RUSTMAP-<version>-windows-x86_64.zip`: `rustmap.exe` with the FFmpeg DLLs (LGPL build) for video.
+   - `RUSTMAP-<version>-linux-x86_64.tar.gz`: built on Ubuntu 24.04; `RUNNING.txt` lists the libraries it needs.
+
+To try the builds without publishing, run the *Release* workflow by hand (Actions tab > Release > Run workflow); the files appear as artifacts of that run.
+
+To build the Mac app locally: `scripts/macos-app.sh` (writes `dist/RUSTMAP.app` and a zip).
+
 ## License
 
 MIT — see [LICENSE](LICENSE).

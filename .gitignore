@@ -6,3 +6,6 @@
 _to_delete/
 *.autosave
 /*.rustmap
+dist/
+# Binary from a local universal build
+/rustmap

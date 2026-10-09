@@ -3,12 +3,12 @@ resolver = "3"
 members = ["app", "crates/*"]
 
 [workspace.package]
-version = "0.0.1"
+version = "0.1.0"
 edition = "2024"
 rust-version = "1.95"
 license = "MIT"
 authors = ["Jan Everaert"]
-repository = ""
+repository = "https://github.com/EveraertJan/mapper"
 
 [workspace.dependencies]
 rustmap-core = { path = "crates/rustmap-core" }

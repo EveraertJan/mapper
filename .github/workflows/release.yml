@@ -1,0 +1,127 @@
+name: Release
+
+# Push a tag like v0.1.0 to build every platform and publish a GitHub
+# Release. "Run workflow" on the Actions tab builds the same files without
+# publishing (they show up as downloadable artifacts of that run).
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  # LGPL build (not GPL), linked dynamically, so it can ship with an MIT app.
+  FFMPEG_WIN: ffmpeg-n8.1-latest-win64-lgpl-shared-8.1
+
+jobs:
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - run: scripts/macos-app.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: dist/*.zip
+
+  linux:
+    # Built on Ubuntu 24.04: runs there and on distributions with the same
+    # FFmpeg (libavcodec 60) or newer glibc.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config clang \
+            libavformat-dev libavcodec-dev libavutil-dev libswscale-dev
+      - run: cargo build --release --locked -p rustmap
+      - name: Package
+        run: |
+          VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          NAME=RUSTMAP-$VERSION-linux-x86_64
+          mkdir -p dist/$NAME
+          cp target/release/rustmap README.md LICENSE dist/$NAME/
+          cat > dist/$NAME/RUNNING.txt <<'TXT'
+          RUSTMAP for Linux (x86_64), built on Ubuntu 24.04.
+
+          Needs: a Vulkan driver (mesa-vulkan-drivers or your GPU vendor's)
+          and FFmpeg's libraries:
+            sudo apt install libavformat60 libavcodec60 libswscale7 mesa-vulkan-drivers
+
+          Run: ./rustmap  (or ./rustmap show.rustmap)
+          NDI: install the NDI runtime (libndi.so.6) or set RUSTMAP_NDI_LIB.
+          TXT
+          tar -C dist -czf dist/$NAME.tar.gz $NAME
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: dist/*.tar.gz
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: FFmpeg (prebuilt, LGPL)
+        shell: pwsh
+        run: |
+          $url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/$env:FFMPEG_WIN.zip"
+          Invoke-WebRequest $url -OutFile ffmpeg.zip
+          Expand-Archive ffmpeg.zip -DestinationPath .
+          "FFMPEG_DIR=$PWD\$env:FFMPEG_WIN" | Out-File -FilePath $env:GITHUB_ENV -Append
+          # bindgen needs libclang; the runner ships LLVM here.
+          "LIBCLANG_PATH=C:\Program Files\LLVM\bin" | Out-File -FilePath $env:GITHUB_ENV -Append
+      - run: cargo build --release --locked -p rustmap
+      - name: Package
+        shell: pwsh
+        run: |
+          $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.*)"').Matches[0].Groups[1].Value
+          $name = "RUSTMAP-$version-windows-x86_64"
+          New-Item -ItemType Directory -Force "dist\$name" | Out-Null
+          Copy-Item target\release\rustmap.exe, README.md, LICENSE "dist\$name\"
+          # FFmpeg DLLs next to the exe, with FFmpeg's license.
+          Copy-Item "$env:FFMPEG_DIR\bin\*.dll" "dist\$name\"
+          New-Item -ItemType Directory -Force "dist\$name\ffmpeg-license" | Out-Null
+          Copy-Item "$env:FFMPEG_DIR\LICENSE.txt" "dist\$name\ffmpeg-license\" -ErrorAction SilentlyContinue
+          @"
+          RUSTMAP for Windows (x86_64).
+
+          Run rustmap.exe. The FFmpeg DLLs next to it are needed for video.
+          FFmpeg is LGPL; it comes from https://github.com/BtbN/FFmpeg-Builds
+          ($env:FFMPEG_WIN), source at https://ffmpeg.org.
+          NDI: install NDI Tools (ndi.video/tools) or set RUSTMAP_NDI_LIB.
+          "@ | Out-File -Encoding utf8 "dist\$name\RUNNING.txt"
+          Compress-Archive -Path "dist\$name" -DestinationPath "dist\$name.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: dist/*.zip
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [macos, linux, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+          body: |
+            **macOS**: unzip and move RUSTMAP.app to Applications. It isn't notarized, so the first time: right-click > Open > Open (or `xattr -dr com.apple.quarantine /Applications/RUSTMAP.app`).
+            **Windows**: unzip and run `rustmap.exe`. SmartScreen may warn the first time: More info > Run anyway.
+            **Linux**: see RUNNING.txt in the archive for the libraries it needs.
+            NDI works when the NDI runtime (NDI Tools) is installed.

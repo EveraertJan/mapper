@@ -1,5 +1,8 @@
 //! RUSTMAP application entry point.
 
+// Release builds on Windows open no console window next to the app.
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 mod app;
 mod control;
 mod document;
