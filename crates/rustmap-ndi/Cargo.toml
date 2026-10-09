@@ -1,0 +1,21 @@
+[package]
+name = "rustmap-ndi"
+description = "RUSTMAP NDI input/output. Loads the NDI runtime at run time; nothing proprietary is linked or shipped."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+libloading.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+# FFI needs `unsafe`; it is confined to `ffi.rs` and the thin wrappers in this crate.
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+undocumented_unsafe_blocks = "warn"

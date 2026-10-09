@@ -1,0 +1,40 @@
+[package]
+name = "rustmap-media"
+description = "RUSTMAP media decoding (images now; video later). CPU side only."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+image.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+puffin.workspace = true
+
+# FFmpeg: the video backend on Linux and Windows.
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+ffmpeg-next = { workspace = true, optional = true }
+
+# macOS: AVFoundation (hardware decoding via VideoToolbox, nothing to install).
+# FFmpeg is opt-in there, as a fallback for formats AVFoundation can't open.
+[target.'cfg(target_os = "macos")'.dependencies]
+ffmpeg-next-macos = { package = "ffmpeg-next", version = "9", default-features = false, features = ["codec", "format", "software-scaling"], optional = true }
+objc2.workspace = true
+objc2-foundation.workspace = true
+objc2-av-foundation.workspace = true
+objc2-core-media.workspace = true
+objc2-core-video.workspace = true
+objc2-core-foundation.workspace = true
+
+[features]
+default = ["video"]
+# Video playback: AVFoundation on macOS, FFmpeg elsewhere
+# (FFmpeg needs its libraries, e.g. `apt install libavformat-dev libswscale-dev pkg-config`).
+video = ["dep:ffmpeg-next"]
+# Also use FFmpeg on macOS, for formats AVFoundation can't open (`brew install ffmpeg pkg-config`).
+ffmpeg-macos = ["video", "dep:ffmpeg-next-macos"]
+
+[lints]
+workspace = true

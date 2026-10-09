@@ -1,0 +1,17 @@
+[package]
+name = "rustmap-core"
+description = "RUSTMAP scene model. No GPU, no UI."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+rustmap-geom.workspace = true
+serde.workspace = true
+ron.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,14 @@
+[package]
+name = "rustmap-geom"
+description = "RUSTMAP geometry: homographies, hit testing, snapping. Pure math, no GPU."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+glam.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,40 @@
+[package]
+name = "rustmap"
+description = "RUSTMAP — projection mapping in Rust."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+default-run = "rustmap"
+
+[dependencies]
+rustmap-core.workspace = true
+rustmap-render.workspace = true
+rustmap-ui.workspace = true
+rustmap-geom.workspace = true
+rustmap-media.workspace = true
+rustmap-ndi.workspace = true
+rustmap-dmx.workspace = true
+rfd.workspace = true
+dirs.workspace = true
+winit.workspace = true
+egui.workspace = true
+egui-wgpu.workspace = true
+egui-winit.workspace = true
+puffin.workspace = true
+puffin_http.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+anyhow.workspace = true
+
+[features]
+default = ["video"]
+# Video playback: AVFoundation on macOS (built in), FFmpeg elsewhere.
+# Build without video: `cargo build --no-default-features`.
+video = ["rustmap-media/video"]
+# Also use FFmpeg on macOS for formats AVFoundation can't open (needs `brew install ffmpeg pkg-config`).
+ffmpeg-macos = ["rustmap-media/ffmpeg-macos"]
+
+[lints]
+workspace = true

@@ -1,0 +1,17 @@
+[package]
+name = "rustmap-ui"
+description = "RUSTMAP control interface (egui)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+rustmap-core.workspace = true
+rustmap-geom.workspace = true
+egui.workspace = true
+puffin.workspace = true
+
+[lints]
+workspace = true

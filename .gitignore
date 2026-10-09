@@ -1,0 +1,8 @@
+/target
+.DS_Store
+*.ron.tmp
+
+# Delivery archives and local test shows
+_to_delete/
+*.autosave
+/*.rustmap

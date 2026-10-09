@@ -1,0 +1,64 @@
+[workspace]
+resolver = "3"
+members = ["app", "crates/*"]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+rust-version = "1.95"
+license = "MIT"
+authors = ["Jan Everaert"]
+repository = ""
+
+[workspace.dependencies]
+rustmap-core = { path = "crates/rustmap-core" }
+rustmap-render = { path = "crates/rustmap-render" }
+rustmap-ui = { path = "crates/rustmap-ui" }
+rustmap-geom = { path = "crates/rustmap-geom" }
+rustmap-media = { path = "crates/rustmap-media", default-features = false }
+rustmap-ndi = { path = "crates/rustmap-ndi" }
+rustmap-dmx = { path = "crates/rustmap-dmx" }
+
+# GPU / windowing / UI — these three must move together.
+wgpu = "30.0"
+winit = "0.30.13"
+egui = "0.36"
+egui-wgpu = "0.36"
+egui-winit = "0.36"
+
+glam = { version = "0.34", features = ["bytemuck"] }
+bytemuck = { version = "1.25", features = ["derive"] }
+pollster = "1.0"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "tiff", "webp", "bmp", "gif"] }
+rfd = "0.17"
+libloading = "0.9"
+objc2 = "0.6"
+objc2-foundation = "0.3"
+objc2-av-foundation = { version = "0.3", features = ["objc2-core-media", "objc2-core-video"] }
+objc2-core-media = "0.3"
+objc2-core-video = "0.3"
+objc2-core-foundation = "0.3"
+ffmpeg-next = { version = "9", default-features = false, features = ["codec", "format", "software-scaling"] }
+serde = { version = "1", features = ["derive"] }
+ron = "0.12"
+dirs = "7"
+
+puffin = "0.20"
+puffin_http = "0.17"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1"
+thiserror = "2"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+
+[profile.dev]
+# Shaders and decoders are painfully slow unoptimized; keep our code debuggable but deps fast.
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
