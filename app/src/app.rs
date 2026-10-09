@@ -59,6 +59,7 @@ pub struct App {
     /// Seconds since the previous frame (drives video clocks).
     frame_dt: f64,
     led: LedOutput,
+    osc: crate::osc::OscInput,
 }
 
 /// Everything that needs the GPU; exists once the event loop has started.
@@ -125,6 +126,7 @@ impl App {
             title: String::new(),
             frame_dt: 0.0,
             led: LedOutput::default(),
+            osc: crate::osc::OscInput::default(),
         }
     }
 
@@ -396,7 +398,9 @@ impl App {
                 }
             }
         }
-        self.led.update(&self.project, self.frame_dt);
+        let now = self.start.elapsed().as_secs_f64();
+        self.osc.update(&mut self.project, &mut self.led, now);
+        self.led.update(&mut self.project, now, self.frame_dt);
     }
 
     fn handle_action(&mut self, action: UiAction) {
@@ -406,6 +410,18 @@ impl App {
             UiAction::ImportImages { assign_to } => self.pick_images(assign_to),
             UiAction::ImportDmxTypes => self.import_dmx_types(),
             UiAction::ExportDmxType(id) => self.export_dmx_type(id),
+            UiAction::GoCue(id) => {
+                let now = self.start.elapsed().as_secs_f64();
+                self.led.go(&mut self.project, id, now);
+            }
+            UiAction::CurrentCue => {
+                let now = self.start.elapsed().as_secs_f64();
+                self.led.again(&mut self.project, now);
+            }
+            UiAction::StepCue(forward) => {
+                let now = self.start.elapsed().as_secs_f64();
+                self.led.step(&mut self.project, forward, now);
+            }
             UiAction::SeekVideo(id, t) => {
                 if let Some(gfx) = &mut self.gfx {
                     gfx.media.seek(id, t);
@@ -457,9 +473,11 @@ impl App {
                 tracing::info!(presenting = self.presenting, "presentation mode");
             }
             UiAction::Undo => {
+                self.led.stop_fade();
                 self.doc.history.undo(&mut self.project);
             }
             UiAction::Redo => {
+                self.led.stop_fade();
                 self.doc.history.redo(&mut self.project);
             }
             UiAction::RelinkMedia(id) => {
@@ -539,6 +557,7 @@ impl App {
         self.project = project;
         self.ui_state = UiState::default();
         self.presenting = false;
+        self.led.reset_cues();
         if let Some(gfx) = &mut self.gfx {
             for (_, rt) in std::mem::take(&mut gfx.outputs) {
                 gfx.control.renderer.free_texture(&rt.preview);
@@ -720,6 +739,7 @@ impl App {
                 media: &gfx.media.status,
                 ndi: &self.ndi_view,
                 dmx: &self.led.view,
+                osc: &self.osc.view,
                 video: &gfx.media.video_times,
                 stats: &self.stats,
                 adapter: &adapter,
@@ -743,7 +763,11 @@ impl App {
         for action in actions {
             self.handle_action(action);
         }
-        self.doc.history.observe(&self.project, settled);
+        // A running cue fade changes the fixtures every frame: one undo step
+        // for the whole fade, taken when it ends.
+        self.doc
+            .history
+            .observe(&self.project, settled && !self.led.fading());
         self.doc.autosave(&self.project);
         let title = self.doc.window_title(&self.project);
         if title != self.title

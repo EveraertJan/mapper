@@ -28,6 +28,7 @@ fn content(p: &Project) -> Project {
     // Sending to the LEDs is operating the show too.
     c.led.send = false;
     c.led.blackout = false;
+    c.osc.listen = false;
     // Pause/play is operating the show, not editing it.
     for m in &mut c.media {
         if let crate::media::MediaSource::Video { playback, .. } = &mut m.source {
@@ -47,6 +48,7 @@ fn content(p: &Project) -> Project {
 fn keep_live_state(restored: &mut Project, live: &Project) {
     restored.led.send = live.led.send;
     restored.led.blackout = live.led.blackout;
+    restored.osc.listen = live.osc.listen;
     for o in &mut restored.outputs {
         if let Some(l) = live.output(o.id) {
             o.enabled = l.enabled;

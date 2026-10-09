@@ -10,6 +10,7 @@ pub mod led;
 pub mod lights;
 pub mod media;
 pub mod output;
+pub mod playback;
 pub mod project;
 pub mod surface;
 
@@ -23,5 +24,6 @@ pub use lights::{
 };
 pub use media::{Media, MediaId, MediaSource, Playback};
 pub use output::{EdgeBlend, OutputConfig, OutputId, TestPattern};
-pub use project::Project;
+pub use playback::{Cue, CueId, CuePlayer, DmxGroup, DmxGroupId, GroupControl, group_controls};
+pub use project::{OscSettings, Project};
 pub use surface::{BlendMode, ColorAdjust, MASK_MAX_POINTS, Mask, Mesh, Shape, Surface, SurfaceId};

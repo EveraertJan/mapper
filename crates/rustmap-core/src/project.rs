@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -6,7 +7,27 @@ use crate::fixture::{Fixture, FixtureId, FixtureShape, LedSettings};
 use crate::lights::{DmxFixture, DmxFixtureId, DmxType, DmxTypeId};
 use crate::media::{Media, MediaId, MediaSource};
 use crate::output::{OutputConfig, OutputId};
+use crate::playback::{Cue, CueId, DmxGroup, DmxGroupId};
 use crate::surface::{Surface, SurfaceId};
+
+/// OSC remote control (cues, blackout, master) over UDP.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct OscSettings {
+    /// Listen for OSC. Saved, so a production file listens; kept out of undo.
+    pub listen: bool,
+    /// UDP port to listen on.
+    pub port: u16,
+}
+
+impl Default for OscSettings {
+    fn default() -> Self {
+        Self {
+            listen: false,
+            port: 8000,
+        }
+    }
+}
 
 /// The whole show.
 ///
@@ -30,12 +51,20 @@ pub struct Project {
     pub dmx_types: Vec<DmxType>,
     /// Patched DMX fixtures, in console order.
     pub dmx_fixtures: Vec<DmxFixture>,
+    /// Groups of DMX fixtures with shared faders.
+    pub dmx_groups: Vec<DmxGroup>,
+    /// Stored looks, in playback order.
+    pub cues: Vec<Cue>,
+    /// OSC remote control.
+    pub osc: OscSettings,
     next_output_id: u32,
     next_media_id: u32,
     next_surface_id: u32,
     next_fixture_id: u32,
     next_dmx_type_id: u32,
     next_dmx_fixture_id: u32,
+    next_dmx_group_id: u32,
+    next_cue_id: u32,
 }
 
 impl Default for Project {
@@ -50,12 +79,17 @@ impl Default for Project {
             led: LedSettings::default(),
             dmx_types: Vec::new(),
             dmx_fixtures: Vec::new(),
+            dmx_groups: Vec::new(),
+            cues: Vec::new(),
+            osc: OscSettings::default(),
             next_output_id: 1,
             next_media_id: 1,
             next_surface_id: 1,
             next_fixture_id: 1,
             next_dmx_type_id: 1,
             next_dmx_fixture_id: 1,
+            next_dmx_group_id: 1,
+            next_cue_id: 1,
         }
     }
 }
@@ -133,6 +167,7 @@ impl Project {
     pub fn remove_dmx_type(&mut self, id: DmxTypeId) -> Option<DmxType> {
         let index = self.dmx_types.iter().position(|t| t.id == id)?;
         self.dmx_fixtures.retain(|f| f.type_id != id);
+        self.prune_dmx_refs();
         Some(self.dmx_types.remove(index))
     }
 
@@ -185,7 +220,9 @@ impl Project {
 
     pub fn remove_dmx_fixture(&mut self, id: DmxFixtureId) -> Option<DmxFixture> {
         let index = self.dmx_fixtures.iter().position(|f| f.id == id)?;
-        Some(self.dmx_fixtures.remove(index))
+        let f = self.dmx_fixtures.remove(index);
+        self.prune_dmx_refs();
+        Some(f)
     }
 
     pub fn dmx_fixture(&self, id: DmxFixtureId) -> Option<&DmxFixture> {
@@ -204,6 +241,89 @@ impl Project {
         for f in self.dmx_fixtures.iter_mut().filter(|f| f.type_id == id) {
             f.fit_to(&ty);
         }
+    }
+
+    // ---- groups and cues ----
+
+    /// Drops group members and cue values whose fixture no longer exists.
+    pub fn prune_dmx_refs(&mut self) {
+        let alive: std::collections::HashSet<DmxFixtureId> =
+            self.dmx_fixtures.iter().map(|f| f.id).collect();
+        for g in &mut self.dmx_groups {
+            g.fixtures.retain(|id| alive.contains(id));
+        }
+        for c in &mut self.cues {
+            c.values.retain(|id, _| alive.contains(id));
+        }
+    }
+
+    pub fn add_dmx_group(&mut self) -> DmxGroupId {
+        let id = DmxGroupId(self.next_dmx_group_id);
+        self.next_dmx_group_id += 1;
+        self.dmx_groups.push(DmxGroup {
+            id,
+            name: format!("Group {}", id.0),
+            fixtures: Vec::new(),
+        });
+        id
+    }
+
+    pub fn remove_dmx_group(&mut self, id: DmxGroupId) {
+        self.dmx_groups.retain(|g| g.id != id);
+    }
+
+    pub fn dmx_group(&self, id: DmxGroupId) -> Option<&DmxGroup> {
+        self.dmx_groups.iter().find(|g| g.id == id)
+    }
+
+    pub fn dmx_group_mut(&mut self, id: DmxGroupId) -> Option<&mut DmxGroup> {
+        self.dmx_groups.iter_mut().find(|g| g.id == id)
+    }
+
+    /// Stores the current fixture values as a new cue: all fixtures, or only
+    /// `only`.
+    pub fn record_cue(&mut self, only: Option<&[DmxFixtureId]>) -> CueId {
+        let id = CueId(self.next_cue_id);
+        self.next_cue_id += 1;
+        self.cues.push(Cue {
+            id,
+            name: format!("Cue {}", id.0),
+            fade: 0.0,
+            values: BTreeMap::new(),
+        });
+        self.update_cue(id, only);
+        id
+    }
+
+    /// Overwrites a cue's values with the current ones (all fixtures, or `only`).
+    pub fn update_cue(&mut self, id: CueId, only: Option<&[DmxFixtureId]>) {
+        let values: BTreeMap<_, _> = self
+            .dmx_fixtures
+            .iter()
+            .filter(|f| only.is_none_or(|o| o.contains(&f.id)))
+            .filter_map(|f| {
+                let ty = self.dmx_type(f.type_id)?;
+                Some((
+                    f.id,
+                    (0..ty.channels.len()).map(|i| f.value(ty, i)).collect(),
+                ))
+            })
+            .collect();
+        if let Some(c) = self.cue_mut(id) {
+            c.values = values;
+        }
+    }
+
+    pub fn remove_cue(&mut self, id: CueId) {
+        self.cues.retain(|c| c.id != id);
+    }
+
+    pub fn cue(&self, id: CueId) -> Option<&Cue> {
+        self.cues.iter().find(|c| c.id == id)
+    }
+
+    pub fn cue_mut(&mut self, id: CueId) -> Option<&mut Cue> {
+        self.cues.iter_mut().find(|c| c.id == id)
     }
 
     /// Whether anything takes DMX channels (LED or DMX fixtures).

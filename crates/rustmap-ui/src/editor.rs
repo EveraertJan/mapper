@@ -11,7 +11,7 @@ use rustmap_geom::{
 
 use crate::theme::SELECTION;
 use crate::warp::{Warp, corner_handle, mask_handles, set_warp_handle, warp_handles};
-use crate::{EditLayer, UiState, ViewData};
+use crate::{EditLayer, UiAction, UiState, ViewData};
 
 /// Grab radius around a corner, in screen points.
 pub(crate) const HANDLE_HIT: f32 = 12.0;
@@ -72,6 +72,7 @@ pub(crate) fn show(
     project: &mut Project,
     state: &mut UiState,
     view: &ViewData<'_>,
+    actions: &mut Vec<UiAction>,
 ) {
     let Some(output_id) = state.selected else {
         ui.centered_and_justified(|ui| {
@@ -128,7 +129,7 @@ pub(crate) fn show(
             return;
         }
         crate::EditorMode::Console => {
-            crate::lights::console(ui, project, state);
+            crate::lights::console(ui, project, state, view, actions);
             return;
         }
         crate::EditorMode::Dmx => {

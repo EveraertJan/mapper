@@ -109,6 +109,30 @@ For lights that aren't pixels — PARs, dimmers, moving heads, hazers — define
 
 *Export type…* saves a fixture type as a `.rmfixture` file (by default in your RUSTMAP/Fixtures data folder); *Import fixture types…* in the + menu loads them into another show.
 
+### Groups and cues
+
+At the top of the **Console** tab:
+
+- **Groups**: *+ Group*, pick its fixtures from the members menu, and it gets one fader per kind of channel (all dimmers together, all reds together, …). The fader shows the average and moves every member.
+- **Cues** sit in the lower half of the Console (drag the divider to resize; click *CUES* to collapse it to one row of buttons). Set the faders, then *Record all* (every fixture) or *Record selected* (the selected fixture only). Each cue has a number, *Go*, a name, a fade time and *Update* (overwrite with the current faders). *Back* / *Next* step through the list; *Current* applies the current cue again after you moved faders away from it.
+- During a fade the faders themselves move, so what you see is what is sent. Dimmer, colors, pan, tilt, zoom and focus fade; wheels, gobos and strobe jump. Grab a fader mid-fade and that channel is yours. A whole fade is one undo step.
+
+### OSC remote
+
+Tick **OSC** in the Cues panel (port 8000 by default) and send from TouchOSC, QLab, Bitfocus Companion, a lighting desk or anything else that speaks OSC over UDP:
+
+| Address | Arguments | Does |
+|---|---|---|
+| `/rustmap/cue/go` | cue number or name | go to that cue |
+| `/rustmap/cue/go/<n>` | none, or 1 | go to cue *n* (for buttons) |
+| `/rustmap/cue/next` or `/rustmap/go` | none, or 1 | next cue |
+| `/rustmap/cue/back` | none, or 1 | previous cue |
+| `/rustmap/cue/current` | none, or 1 | apply the current cue again |
+| `/rustmap/blackout` | 0 / 1, none toggles | blackout |
+| `/rustmap/master` | 0..1 | grand master |
+
+Cue numbers are the numbers in the cue list (counting from 1). A trigger with argument 0 is a button release and is ignored, so TouchOSC buttons fire once. The `/rustmap` prefix is optional and addresses ignore case. *Recent OSC* shows what arrived and what it did, which helps when setting up a controller. Listening is saved with the show (a production file listens from the start) but is not part of undo. To test from a terminal: `oscsend localhost 8000 /rustmap/cue/go i 1` (liblo) or `sendosc 127.0.0.1 8000 /rustmap/cue/next`.
+
 ### Test patterns
 
 - **Grid**: grid centered on the image, center cross, diagonals, circles (should look round on the wall), colored corner tags for orientation (top-left red, top-right green, bottom-left blue, bottom-right magenta), output number as yellow dots, white 1–2 px border to spot cropping, and a sweeping bar that makes stutter and tearing obvious.
@@ -134,6 +158,7 @@ crates/rustmap-dmx/     Art-Net and sACN sender (pure Rust, UDP)
 crates/rustmap-geom/    homographies, hit testing, snapping
 crates/rustmap-media/   image loading and FFmpeg video playback on worker threads
 crates/rustmap-ndi/     NDI in/out, runtime-loaded
+crates/rustmap-osc/     OSC listener: cue go/next/back, blackout, master
 crates/rustmap-render/  wgpu: output targets, test patterns, quads and meshes, edge blend, LED sampling, guides, readback
 crates/rustmap-ui/      egui panels and the output editor
 ```

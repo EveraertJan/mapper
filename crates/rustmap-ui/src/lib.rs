@@ -20,7 +20,7 @@ pub mod warp;
 use std::collections::HashMap;
 
 use rustmap_core::{
-    DmxFixtureId, DmxTypeId, FixtureId, MediaId, OutputId, Project, SurfaceId, UniverseKey,
+    CueId, DmxFixtureId, DmxTypeId, FixtureId, MediaId, OutputId, Project, SurfaceId, UniverseKey,
 };
 
 pub use stats::FrameStats;
@@ -103,6 +103,22 @@ pub struct DmxView {
     pub frames: u64,
     /// Problems to show: bad destinations, socket errors, patch overlaps.
     pub errors: Vec<String>,
+    /// The cue last gone to, and how far its fade is (0..1) while one runs.
+    pub current_cue: Option<CueId>,
+    pub fade: Option<f32>,
+}
+
+/// OSC input state for the UI.
+#[derive(Debug, Clone, Default)]
+pub struct OscView {
+    /// Port being listened on.
+    pub listening: Option<u16>,
+    /// Why listening failed (port in use, ...).
+    pub error: Option<String>,
+    /// Messages received since start.
+    pub received: u64,
+    /// Latest messages first, with what they did.
+    pub recent: Vec<String>,
 }
 
 /// NDI state for the UI.
@@ -150,6 +166,7 @@ pub struct ViewData<'a> {
     pub media: &'a HashMap<MediaId, MediaStatus>,
     pub ndi: &'a NdiView,
     pub dmx: &'a DmxView,
+    pub osc: &'a OscView,
     pub video: &'a HashMap<MediaId, VideoTime>,
     pub file: &'a FileView,
     pub stats: &'a FrameStats,
@@ -198,6 +215,12 @@ pub enum UiAction {
     ImportDmxTypes,
     /// Save a DMX fixture type to a file, to reuse it in other shows.
     ExportDmxType(DmxTypeId),
+    /// Go to a cue (fixtures take its values, the output fades).
+    GoCue(CueId),
+    /// Next (true) or previous cue.
+    StepCue(bool),
+    /// Re-apply the current cue.
+    CurrentCue,
 }
 
 /// UI-only state that is not part of the show file.
@@ -209,6 +232,8 @@ pub struct UiState {
     pub selected_fixture: Option<FixtureId>,
     /// Selected DMX fixture (shown in the inspector and highlighted in the console).
     pub selected_dmx: Option<DmxFixtureId>,
+    /// Console: cue list expanded (collapsed keeps only its buttons).
+    pub cues_open: bool,
     /// Handle of the selected surface that arrow keys move: a corner (TL, TR,
     /// BR, BL), a mesh point, or a mask point, depending on [`Self::layer`].
     /// For a selected fixture: one of its handles.
@@ -229,6 +254,7 @@ impl Default for UiState {
             selected_surface: None,
             selected_fixture: None,
             selected_dmx: None,
+            cues_open: true,
             selected_corner: None,
             layer: EditLayer::Warp,
             snapping: true,
@@ -464,7 +490,9 @@ pub fn draw(
             });
         });
 
-    egui::CentralPanel::default().show(ui, |ui| editor::show(ui, project, state, view));
+    egui::CentralPanel::default().show(ui, |ui| {
+        editor::show(ui, project, state, view, &mut actions)
+    });
 
     actions
 }

@@ -1,0 +1,15 @@
+[package]
+name = "rustmap-osc"
+description = "RUSTMAP OSC input: listens on UDP and turns messages into show commands."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+rosc = "0.11"
+tracing.workspace = true
+
+[lints]
+workspace = true

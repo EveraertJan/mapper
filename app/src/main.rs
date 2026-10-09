@@ -10,6 +10,7 @@ mod guides;
 mod led;
 mod media;
 mod monitors;
+mod osc;
 mod output_window;
 
 use tracing_subscriber::EnvFilter;

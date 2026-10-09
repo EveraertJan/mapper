@@ -7,7 +7,7 @@ use rustmap_core::{
     ChannelDef, ChannelKind, DmxFixture, DmxFixtureId, DmxType, DmxTypeId, Project, ValueRange,
 };
 
-use crate::{UiAction, UiState};
+use crate::{UiAction, UiState, ViewData};
 
 const FADER_W: f32 = 38.0;
 const FADER_H: f32 = 150.0;
@@ -432,8 +432,34 @@ fn ranges_editor(ui: &mut egui::Ui, c: &mut ChannelDef) {
 
 // ---- console ----
 
-pub(crate) fn console(ui: &mut egui::Ui, project: &mut Project, state: &mut UiState) {
-    egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+pub(crate) fn console(
+    ui: &mut egui::Ui,
+    project: &mut Project,
+    state: &mut UiState,
+    view: &ViewData<'_>,
+    actions: &mut Vec<UiAction>,
+) {
+    // Cues in a bottom panel: half the console when open, one row of
+    // buttons when collapsed. Faders fill the rest.
+    let half = (ui.available_height() * 0.5).max(120.0);
+    let panel = if state.cues_open {
+        egui::Panel::bottom("console_cues_open")
+            .resizable(true)
+            .default_size(half)
+            .min_size(90.0)
+    } else {
+        egui::Panel::bottom("console_cues_closed").resizable(false)
+    };
+    panel
+        .frame(egui::Frame::NONE.inner_margin(egui::Margin::symmetric(0, 6)))
+        .show(ui, |ui| cues(ui, project, state, view, actions));
+
+    egui::ScrollArea::vertical()
+        .id_salt("console_faders")
+        .auto_shrink(false)
+        .show(ui, |ui| {
+        groups(ui, project);
+        ui.add_space(6.0);
         // egui can't wrap nested groups by itself, so build the rows from
         // each strip's known width.
         const GAP: f32 = 10.0;
@@ -700,4 +726,318 @@ fn fader(
         egui::StrokeKind::Inside,
     );
     *value != old
+}
+
+// ---- cues ----
+
+/// Cue list: record the current look, go to it, fade between looks. The
+/// first row (record, back / current / next) stays visible when collapsed.
+fn cues(
+    ui: &mut egui::Ui,
+    project: &mut Project,
+    state: &mut UiState,
+    view: &ViewData<'_>,
+    actions: &mut Vec<UiAction>,
+) {
+    let current = view.dmx.current_cue;
+    let any = !project.cues.is_empty();
+    ui.horizontal(|ui| {
+        let (rect, response) = ui.allocate_exact_size(egui::vec2(14.0, 14.0), Sense::click());
+        let openness = if state.cues_open { 1.0 } else { 0.0 };
+        egui::collapsing_header::paint_default_icon(
+            &mut ui.new_child(egui::UiBuilder::new().max_rect(rect)),
+            openness,
+            &response,
+        );
+        let title =
+            ui.add(egui::Label::new(egui::RichText::new("CUES").strong()).sense(Sense::click()));
+        if response.clicked() || title.clicked() {
+            state.cues_open = !state.cues_open;
+        }
+        title.on_hover_text(if state.cues_open {
+            "Collapse the cue list (buttons stay)"
+        } else {
+            "Show the cue list"
+        });
+        ui.separator();
+        if ui
+            .button("Record all")
+            .on_hover_text("Store every fixture's faders as a new cue")
+            .clicked()
+        {
+            project.record_cue(None);
+        }
+        let selected = state.selected_dmx;
+        if ui
+            .add_enabled(selected.is_some(), egui::Button::new("Record selected"))
+            .on_hover_text("Store only the selected fixture")
+            .on_disabled_hover_text("Select a DMX fixture first")
+            .clicked()
+            && let Some(id) = selected
+        {
+            project.record_cue(Some(&[id]));
+        }
+        ui.separator();
+        if ui
+            .add_enabled(any, egui::Button::new("Back"))
+            .on_hover_text("Previous cue")
+            .clicked()
+        {
+            actions.push(UiAction::StepCue(false));
+        }
+        if ui
+            .add_enabled(current.is_some(), egui::Button::new("Current"))
+            .on_hover_text("Apply the current cue again (after moving faders)")
+            .on_disabled_hover_text("Go to a cue first")
+            .clicked()
+        {
+            actions.push(UiAction::CurrentCue);
+        }
+        if ui
+            .add_enabled(any, egui::Button::new("Next"))
+            .on_hover_text("Next cue")
+            .clicked()
+        {
+            actions.push(UiAction::StepCue(true));
+        }
+        ui.separator();
+        let live = current.and_then(|id| {
+            let n = project.cues.iter().position(|c| c.id == id)?;
+            Some(format!("{} {}", n + 1, project.cues[n].name))
+        });
+        match (view.dmx.fade, live) {
+            (Some(t), Some(name)) => {
+                ui.add(
+                    egui::ProgressBar::new(t)
+                        .desired_width(160.0)
+                        .text(format!("{name}  {:.0}%", t * 100.0)),
+                );
+            }
+            (None, Some(name)) => {
+                ui.label(egui::RichText::new(name).color(crate::SELECTION));
+            }
+            _ => {
+                ui.weak("no cue");
+            }
+        }
+    });
+    if !state.cues_open {
+        return;
+    }
+    osc_row(ui, project, view);
+    if !any {
+        ui.weak("No cues yet. Set the faders the way you want, then Record.");
+        return;
+    }
+    egui::ScrollArea::vertical()
+        .id_salt("cue_list")
+        .auto_shrink(false)
+        .show(ui, |ui| {
+            let mut remove = None;
+            let mut update = None;
+            let ids: Vec<_> = project.cues.iter().map(|c| c.id).collect();
+            for (n, id) in ids.into_iter().enumerate() {
+                let Some(cue) = project.cue_mut(id) else {
+                    continue;
+                };
+                ui.horizontal(|ui| {
+                    let live = current == Some(id);
+                    ui.add_sized(
+                        [22.0, 18.0],
+                        egui::Label::new(egui::RichText::new(format!("{}", n + 1)).monospace()),
+                    )
+                    .on_hover_text(format!("OSC: /rustmap/cue/go {}", n + 1));
+                    if ui
+                        .add(egui::Button::new("Go").fill(if live {
+                            crate::SELECTION.gamma_multiply(0.5)
+                        } else {
+                            Color32::TRANSPARENT
+                        }))
+                        .clicked()
+                    {
+                        actions.push(UiAction::GoCue(id));
+                    }
+                    ui.add(egui::TextEdit::singleline(&mut cue.name).desired_width(140.0));
+                    ui.add(
+                        egui::DragValue::new(&mut cue.fade)
+                            .range(0.0..=600.0)
+                            .speed(0.05)
+                            .suffix(" s")
+                            .max_decimals(1),
+                    )
+                    .on_hover_text(
+                        "Fade time (colors, dimmer, pan, tilt, zoom and focus blend; the rest jump)",
+                    );
+                    ui.weak(format!("{} fixtures", cue.values.len()));
+                    if ui
+                        .small_button("Update")
+                        .on_hover_text("Overwrite this cue with the current faders (same fixtures)")
+                        .clicked()
+                    {
+                        update = Some(id);
+                    }
+                    if ui.small_button("🗑").on_hover_text("Delete cue").clicked() {
+                        remove = Some(id);
+                    }
+                });
+            }
+            if let Some(id) = update {
+                let only: Vec<_> = project
+                    .cue(id)
+                    .map(|c| c.values.keys().copied().collect())
+                    .unwrap_or_default();
+                project.update_cue(id, Some(&only));
+            }
+            if let Some(id) = remove {
+                project.remove_cue(id);
+            }
+        });
+}
+
+// ---- groups ----
+
+/// Groups: one set of faders for several fixtures.
+fn groups(ui: &mut egui::Ui, project: &mut Project) {
+    egui::CollapsingHeader::new(egui::RichText::new("GROUPS").strong())
+        .default_open(true)
+        .show(ui, |ui| {
+            if ui
+                .button("+ Group")
+                .on_hover_text("Control several fixtures with one set of faders")
+                .clicked()
+            {
+                project.add_dmx_group();
+            }
+            if project.dmx_groups.is_empty() {
+                ui.weak("No groups yet.");
+            }
+            let mut remove = None;
+            let ids: Vec<_> = project.dmx_groups.iter().map(|g| g.id).collect();
+            ui.horizontal_top(|ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(10.0, 10.0);
+                for id in ids {
+                    if group_strip(ui, project, id) {
+                        remove = Some(id);
+                    }
+                }
+            });
+            if let Some(id) = remove {
+                project.remove_dmx_group(id);
+            }
+        });
+}
+
+/// One group's strip. Returns true if it should be deleted.
+fn group_strip(ui: &mut egui::Ui, project: &mut Project, id: rustmap_core::DmxGroupId) -> bool {
+    let Some(group) = project.dmx_group(id).cloned() else {
+        return false;
+    };
+    let controls = rustmap_core::group_controls(project, &group);
+    let mut delete = false;
+    let mut name = group.name.clone();
+    let mut members = group.fixtures.clone();
+    let mut changed: Option<(usize, f32)> = None;
+    let width = strip_width(controls.len().max(2)) - 16.0;
+    egui::Frame::group(ui.style()).show(ui, |ui| {
+        ui.vertical(|ui| {
+            ui.set_width(width);
+            ui.horizontal(|ui| {
+                ui.add(egui::TextEdit::singleline(&mut name).desired_width(90.0));
+                if ui.small_button("🗑").on_hover_text("Delete group").clicked() {
+                    delete = true;
+                }
+            });
+            ui.menu_button(format!("Members ({})", members.len()), |ui| {
+                for f in &project.dmx_fixtures {
+                    let mut on = members.contains(&f.id);
+                    if ui.checkbox(&mut on, &f.name).changed() {
+                        if on {
+                            members.push(f.id);
+                        } else {
+                            members.retain(|m| *m != f.id);
+                        }
+                    }
+                }
+                if project.dmx_fixtures.is_empty() {
+                    ui.weak("No fixtures");
+                }
+            });
+            ui.horizontal_top(|ui| {
+                ui.spacing_mut().item_spacing.x = FADER_GAP;
+                for (n, c) in controls.iter().enumerate() {
+                    ui.vertical(|ui| {
+                        ui.set_width(FADER_W);
+                        let v0 = (c.value(project) * 1000.0).round() as u16;
+                        let mut v = v0;
+                        let text = format!("{:.0}%", f32::from(v) / 10.0);
+                        if fader(ui, &mut v, 1000, 0, kind_color(c.kind), &text) {
+                            changed = Some((n, f32::from(v) / 1000.0));
+                        }
+                        ui.add(egui::Label::new(egui::RichText::new(&c.label).small()).truncate())
+                            .on_hover_text(format!(
+                                "{} · {} fixture channels",
+                                c.label,
+                                c.members.len()
+                            ));
+                    });
+                }
+            });
+        });
+    });
+    if let Some((n, v)) = changed {
+        controls[n].set(project, v);
+    }
+    if let Some(g) = project.dmx_group_mut(id) {
+        g.name = name;
+        g.fixtures = members;
+    }
+    delete
+}
+
+/// Addresses RUSTMAP understands, for the hover help.
+const OSC_HELP: &str = "\
+/rustmap/cue/go <number or name>
+/rustmap/cue/go/<number>
+/rustmap/cue/next   (or /rustmap/go)
+/rustmap/cue/back
+/rustmap/cue/current
+/rustmap/blackout [0|1]   (no argument: toggle)
+/rustmap/master <0..1>
+
+Cue numbers are the positions in this list (from 1).
+A 0 argument on a trigger is a button release and is ignored.";
+
+/// OSC listen switch, port and status.
+fn osc_row(ui: &mut egui::Ui, project: &mut Project, view: &ViewData<'_>) {
+    let osc = view.osc;
+    ui.horizontal(|ui| {
+        ui.checkbox(&mut project.osc.listen, "OSC")
+            .on_hover_text(format!(
+                "Trigger cues from TouchOSC, QLab, Companion…\n\n{OSC_HELP}"
+            ));
+        ui.label("port");
+        ui.add(
+            egui::DragValue::new(&mut project.osc.port)
+                .range(1..=65535)
+                .speed(1),
+        );
+        if let Some(err) = &osc.error {
+            ui.colored_label(ui.visuals().error_fg_color, err);
+        } else if let Some(port) = osc.listening {
+            ui.weak(format!(
+                "listening on UDP {port} · {} received",
+                osc.received
+            ))
+            .on_hover_text(OSC_HELP);
+        }
+    });
+    if project.osc.listen && !osc.recent.is_empty() {
+        egui::CollapsingHeader::new(egui::RichText::new("Recent OSC").small())
+            .id_salt("osc_recent")
+            .show(ui, |ui| {
+                for line in &osc.recent {
+                    ui.label(egui::RichText::new(line).small().monospace());
+                }
+            });
+    }
 }

@@ -37,7 +37,7 @@ A native, GPU-first projection-mapping and LED-mapping tool written in Rust, as 
 | Generators (dropped for now) | **ISF** (Interactive Shader Format) loader → GLSL → WGSL via **naga** | MadMapper materials are ISF; reuses a huge existing shader library. |
 | Audio | **cpal** + **rustfft** | Input capture and FFT bands for audio reactivity. |
 | MIDI (dropped for now) | **midir** | MIDI learn, clock. |
-| OSC | **rosc** | Remote control, TouchOSC, show control. |
+| OSC | **rosc** | Remote control, TouchOSC, show control. In use since M6C for cues. |
 | DMX | Own Art-Net + sACN (E1.31) senders over UDP (std/socket2) | Small protocols; avoid heavy deps. |
 | Serialization | **serde** + **ron** (project files) | Readable, supports enums well, diffable. |
 | IDs | **slotmap** or `uuid` | Stable handles for surfaces/media across undo and save/load. |
@@ -187,7 +187,24 @@ Moved ahead of video (2026-10-08).
 - **Console** tab: one strip per fixture with a fader per channel (colored by kind; drag, Shift-drag for fine, scroll to step, double-click for the default), the current value label under it with a menu of all labels, **Locate** (intensity and colors full) and **Reset**. **Grand master** and **Blackout** work on LED pixels and on DMX intensity channels (the dimmer when a type has one, otherwise its color channels). Values are saved and undoable; blackout is not.
 - DMX monitor hovers name the fixture channel ("Par 2 · Red", "Head 1 · Pan fine").
 - Verified: unit tests (16-bit layout, master, type edits, overlaps, file round-trip) and the real app sending to a UDP receiver, with every byte checked after fader moves, Locate, value-label picks and Blackout.
-- Not done: groups and multi-selection (one fader for many fixtures), presets/cues, effects (chases), importing GDTF / Open Fixture Library definitions, linking a fixture's color to a point of the image.
+- Not done here (see M6C): effects (chases), importing GDTF / Open Fixture Library definitions, linking a fixture's color to a point of the image.
+
+### M6C — Groups and cues (partly done 2026-10-09)
+- **Groups**: a named set of DMX fixtures with one fader per channel kind (all Dimmers together, all Reds together; "Other" channels match by label). Faders show the mean of the members and move all of them (each within its own range, so 8- and 16-bit mix). Managed in the console's *Groups* section.
+- **Cues**: *Record all* / *Record selected* stores fixture values; *Update* overwrites, rename, delete. *Go*, *Next* and *Back* (wrapping). A per-cue fade time moves the fixtures' values (so faders, group faders and the DMX monitor show what is sent): dimmer, colors, pan, tilt, zoom and focus fade, wheels, gobos and strobe jump. A new cue mid-fade starts from where things are; touching a fader mid-fade takes that channel out of the fade. Undo doesn't snapshot while a fade runs, so a whole fade is one undo step (undo stops a running fade). *Current* re-applies the current cue. The cue list is the lower half of the Console (resizable; collapses to its button row).
+- Removing a fixture or type cleans groups and cues. Saved with the show; old shows load unchanged.
+- **OSC remote** (new crate `rustmap-osc`, `rosc`, MIT/Apache): a UDP listener thread (port 8000 by default, set in the Cues panel) for `/rustmap/cue/go <n|name>`, `/rustmap/cue/go/<n>`, `/rustmap/cue/next`, `/rustmap/cue/back`, `/rustmap/cue/current`, `/rustmap/blackout`, `/rustmap/master`. Bundles are unpacked; a 0 argument on a trigger is a button release and is ignored. *Recent OSC* lists the last messages and what they did. Listening is saved, kept out of undo. Verified with unit tests, a UDP loopback test and the running app.
+- Not done: chases (cue sequences on a BPM clock), GDTF / Open Fixture Library import, follow-image (a fixture's color from a point of the output), OSC feedback (sending the current cue back to the controller), OSC for group faders, MIDI.
+
+### M6D — Phone fine-tuning (planned)
+Fine-tune a mapping from up close, with a phone, standing at the projection surface instead of at the computer.
+- **Pairing**: a *Fine-tune with phone* button opens a modal with a QR code. The code holds a URL to a small web server inside the app (plain HTTP + WebSocket, local network only) with a one-time token, so nothing is installed on the phone and a stranger on the same Wi-Fi can't join. The modal shows the address and the connected device, and a Disconnect button.
+- **Phone page** (served from the app, no external assets): shows the chosen output's image with its surfaces, mesh points and mask points. Tap to select a point, drag to move it, nudge buttons (1 px / 10 px, with hold-to-repeat), previous/next point, and a zoom/loupe on the selected point. Optionally the phone camera view as a backdrop, to line a point up with a real edge.
+- **While you work**: the selected point is highlighted on the projector (crosshair or flashing dot), so you can see which point you hold. The desktop follows live. Touches on the phone and mouse input on the desktop don't fight: last writer wins per point.
+- **Undo**: a phone session is one undo step per gesture, like a drag on the desktop; the desktop can undo it.
+- **Safety**: LAN only, token per session, read-only mode for viewing, the server is off unless the modal is open, and it can only edit geometry (corners, mesh points, mask points, edge blend), never open files or change outputs.
+- Needs: embedded HTTP/WebSocket server (e.g. `axum` or `tiny_http` + `tungstenite`), QR generation (`qrcode`), a geometry-only edit message set shared with the UI.
+- **Done when**: you scan the code, walk up to the screen, and move a mesh point on the wall with your finger while watching it move.
 
 ### M7 — Performance and polish → v1.0 (3+ weeks)
 - HAP / HAP Q / HAP Alpha decoding (BC textures).

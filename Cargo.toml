@@ -18,6 +18,7 @@ rustmap-geom = { path = "crates/rustmap-geom" }
 rustmap-media = { path = "crates/rustmap-media", default-features = false }
 rustmap-ndi = { path = "crates/rustmap-ndi" }
 rustmap-dmx = { path = "crates/rustmap-dmx" }
+rustmap-osc = { path = "crates/rustmap-osc" }
 
 # GPU / windowing / UI — these three must move together.
 wgpu = "30.0"

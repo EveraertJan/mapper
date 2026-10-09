@@ -243,6 +243,10 @@ mod tests {
         let par = p.add_dmx_type(crate::DmxType::templates()[2].clone());
         let f = p.add_dmx_fixture(par).unwrap();
         p.dmx_fixture_mut(f).unwrap().values[1] = 200;
+        let g = p.add_dmx_group();
+        p.dmx_group_mut(g).unwrap().fixtures = vec![f];
+        let cue = p.record_cue(None);
+        p.cue_mut(cue).unwrap().fade = 1.5;
         p
     }
 

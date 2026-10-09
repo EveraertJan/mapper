@@ -341,10 +341,25 @@ impl DmxFixture {
     /// Writes the fixture into `universe`. `master` (0..1) scales intensity
     /// channels; disabled fixtures write zeros.
     pub fn write(&self, ty: &DmxType, master: f32, universe: &mut [u8; UNIVERSE_SIZE]) {
+        self.write_values(ty, &self.values, master, universe);
+    }
+
+    /// Like [`Self::write`] with explicit `values` (a cue fade in progress).
+    pub fn write_values(
+        &self,
+        ty: &DmxType,
+        values: &[u16],
+        master: f32,
+        universe: &mut [u8; UNIVERSE_SIZE],
+    ) {
         let master = master.clamp(0.0, 1.0);
         for (i, at) in self.layout(ty) {
             let def = &ty.channels[i];
-            let mut v = if self.enabled { self.value(ty, i) } else { 0 };
+            let mut v = if self.enabled {
+                values.get(i).copied().unwrap_or(def.default).min(def.max())
+            } else {
+                0
+            };
             if ty.is_intensity(i) {
                 v = (f32::from(v) * master).round() as u16;
             }

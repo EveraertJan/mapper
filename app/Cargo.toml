@@ -16,6 +16,7 @@ rustmap-geom.workspace = true
 rustmap-media.workspace = true
 rustmap-ndi.workspace = true
 rustmap-dmx.workspace = true
+rustmap-osc.workspace = true
 rfd.workspace = true
 dirs.workspace = true
 winit.workspace = true
