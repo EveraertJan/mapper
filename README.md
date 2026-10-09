@@ -109,13 +109,18 @@ For lights that aren't pixels — PARs, dimmers, moving heads, hazers — define
 
 *Export type…* saves a fixture type as a `.rmfixture` file (by default in your RUSTMAP/Fixtures data folder); *Import fixture types…* in the + menu loads them into another show.
 
-### Groups and cues
+### Groups
 
-At the top of the **Console** tab:
+At the top of the **Console** tab: *+ Group*, pick its fixtures from the *Members* menu, and it gets one fader per kind of channel (all dimmers together, all reds together, …). The fader shows the average and moves every member.
 
-- **Groups**: *+ Group*, pick its fixtures from the members menu, and it gets one fader per kind of channel (all dimmers together, all reds together, …). The fader shows the average and moves every member.
-- **Cues** sit in the lower half of the Console (drag the divider to resize; click *CUES* to collapse it to one row of buttons). Set the faders, then *Record all* (every fixture) or *Record selected* (the selected fixture only). Each cue has a number, *Go*, a name, a fade time and *Update* (overwrite with the current faders). *Back* / *Next* step through the list; *Current* applies the current cue again after you moved faders away from it.
-- During a fade the faders themselves move, so what you see is what is sent. Dimmer, colors, pan, tilt, zoom and focus fade; wheels, gobos and strobe jump. Grab a fader mid-fade and that channel is yours. A whole fade is one undo step.
+### Cues
+
+A cue is a stored look of the whole show: DMX fixture values, every surface (visible, opacity, color, blend mode, which media it shows, and its corners / mesh / mask / input region) and whether each video plays.
+
+- The **cue panel** sits at the bottom of every editor tab (half the Console, a strip under the Output view; drag the divider to resize). Click *CUES* to collapse it to one row: *Record all*, *Record selected*, *Back*, *Current*, *Next* and the live cue stay available.
+- *Record all* stores the whole show; *Record selected* stores only the selected DMX fixture or surface. *Update* overwrites a cue with the current state (the same items for a cue recorded from a selection). *Current* applies the current cue again after you moved things away from it.
+- Per cue, toggles choose what it applies: **Lights**, **Surfaces** (visibility, opacity, color, blend, media), **Geometry** (off by default, so a cue never undoes a calibration; on, the mapping morphs during the fade) and **Media** (play / pause), with **Restart** to rewind its videos.
+- Fades move the real values, so faders, inspectors and the outputs show what is happening. Fading: dimmer, colors, pan, tilt, zoom, focus, surface opacity (showing and hiding fade through it), surface color and geometry. Switching at the start: media, blend mode, shape, wheels, gobos, strobe. Geometry with a different mesh size or mask point count switches at once. Touch a fader or a surface mid-fade and it stays where you put it. A whole fade is one undo step.
 
 ### OSC remote
 

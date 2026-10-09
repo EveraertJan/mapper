@@ -123,13 +123,14 @@ pub(crate) fn show(
         state.selected_corner = None;
         state.drag = None;
     }
+    crate::lights::cue_panel(ui, project, state, view, actions);
     match state.editor_mode {
         crate::EditorMode::Input => {
             crate::input::show(ui, project, state, view);
             return;
         }
         crate::EditorMode::Console => {
-            crate::lights::console(ui, project, state, view, actions);
+            crate::lights::console(ui, project, state);
             return;
         }
         crate::EditorMode::Dmx => {

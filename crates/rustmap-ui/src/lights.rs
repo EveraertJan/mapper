@@ -432,28 +432,39 @@ fn ranges_editor(ui: &mut egui::Ui, c: &mut ChannelDef) {
 
 // ---- console ----
 
-pub(crate) fn console(
+/// The cue list as a bottom panel of the editor, in every tab: half the
+/// Console when open (a smaller strip elsewhere), one row of buttons when
+/// collapsed. The tab's own content fills the rest.
+pub(crate) fn cue_panel(
     ui: &mut egui::Ui,
     project: &mut Project,
     state: &mut UiState,
     view: &ViewData<'_>,
     actions: &mut Vec<UiAction>,
 ) {
-    // Cues in a bottom panel: half the console when open, one row of
-    // buttons when collapsed. Faders fill the rest.
-    let half = (ui.available_height() * 0.5).max(120.0);
+    let console = state.editor_mode == crate::EditorMode::Console;
     let panel = if state.cues_open {
-        egui::Panel::bottom("console_cues_open")
+        let (id, size) = if console {
+            (
+                "cues_open_console",
+                (ui.available_height() * 0.5).max(120.0),
+            )
+        } else {
+            ("cues_open_editor", 190.0)
+        };
+        egui::Panel::bottom(id)
             .resizable(true)
-            .default_size(half)
+            .default_size(size)
             .min_size(90.0)
     } else {
-        egui::Panel::bottom("console_cues_closed").resizable(false)
+        egui::Panel::bottom("cues_closed").resizable(false)
     };
     panel
         .frame(egui::Frame::NONE.inner_margin(egui::Margin::symmetric(0, 6)))
         .show(ui, |ui| cues(ui, project, state, view, actions));
+}
 
+pub(crate) fn console(ui: &mut egui::Ui, project: &mut Project, state: &mut UiState) {
     egui::ScrollArea::vertical()
         .id_salt("console_faders")
         .auto_shrink(false)
@@ -762,20 +773,23 @@ fn cues(
         ui.separator();
         if ui
             .button("Record all")
-            .on_hover_text("Store every fixture's faders as a new cue")
+            .on_hover_text("Store the whole show as a new cue: DMX fixtures, surfaces and videos")
             .clicked()
         {
             project.record_cue(None);
         }
-        let selected = state.selected_dmx;
+        let fixtures: Vec<_> = state.selected_dmx.into_iter().collect();
+        let surfaces: Vec<_> = state.selected_surface.into_iter().collect();
         if ui
-            .add_enabled(selected.is_some(), egui::Button::new("Record selected"))
-            .on_hover_text("Store only the selected fixture")
-            .on_disabled_hover_text("Select a DMX fixture first")
+            .add_enabled(
+                !fixtures.is_empty() || !surfaces.is_empty(),
+                egui::Button::new("Record selected"),
+            )
+            .on_hover_text("Store only the selected DMX fixture or surface")
+            .on_disabled_hover_text("Select a DMX fixture or a surface first")
             .clicked()
-            && let Some(id) = selected
         {
-            project.record_cue(Some(&[id]));
+            project.record_cue_of(Some((&fixtures, &surfaces)));
         }
         ui.separator();
         if ui
@@ -826,7 +840,9 @@ fn cues(
     }
     osc_row(ui, project, view);
     if !any {
-        ui.weak("No cues yet. Set the faders the way you want, then Record.");
+        ui.weak(
+            "No cues yet. Set up the lights, surfaces and videos the way you want, then Record.",
+        );
         return;
     }
     egui::ScrollArea::vertical()
@@ -866,12 +882,33 @@ fn cues(
                             .max_decimals(1),
                     )
                     .on_hover_text(
-                        "Fade time (colors, dimmer, pan, tilt, zoom and focus blend; the rest jump)",
+                        "Fade time. Fading: dimmer, colors, pan/tilt/zoom/focus, surface opacity and color, geometry. Switching at the start: everything else.",
                     );
-                    ui.weak(format!("{} fixtures", cue.values.len()));
+                    let scope = &mut cue.scope;
+                    ui.spacing_mut().item_spacing.x = 2.0;
+                    ui.toggle_value(&mut scope.lights, "Lights")
+                        .on_hover_text("Apply DMX fixture values");
+                    ui.toggle_value(&mut scope.surfaces, "Surfaces")
+                        .on_hover_text("Apply surface visibility, opacity, color, blend mode and media");
+                    ui.toggle_value(&mut scope.geometry, "Geometry")
+                        .on_hover_text(
+                            "Apply surface corners, mesh, mask and input region (morphs during the fade). Off by default so a cue never undoes a calibration.",
+                        );
+                    ui.toggle_value(&mut scope.media, "Media")
+                        .on_hover_text("Play or pause videos as recorded");
+                    ui.add_enabled_ui(scope.media, |ui| {
+                        ui.toggle_value(&mut cue.restart, "Restart")
+                            .on_hover_text("Rewind this cue's videos to the start");
+                    });
+                    ui.spacing_mut().item_spacing.x = 8.0;
+                    ui.weak(cue.summary());
                     if ui
                         .small_button("Update")
-                        .on_hover_text("Overwrite this cue with the current faders (same fixtures)")
+                        .on_hover_text(if cue.partial {
+                            "Overwrite this cue with the current state (same fixtures and surfaces)"
+                        } else {
+                            "Overwrite this cue with the current state of the whole show"
+                        })
                         .clicked()
                     {
                         update = Some(id);
@@ -882,11 +919,7 @@ fn cues(
                 });
             }
             if let Some(id) = update {
-                let only: Vec<_> = project
-                    .cue(id)
-                    .map(|c| c.values.keys().copied().collect())
-                    .unwrap_or_default();
-                project.update_cue(id, Some(&only));
+                project.update_cue(id);
             }
             if let Some(id) = remove {
                 project.remove_cue(id);

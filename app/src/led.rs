@@ -67,6 +67,11 @@ impl LedOutput {
         self.player.stop();
     }
 
+    /// Videos cues asked to rewind.
+    pub fn take_restarts(&mut self) -> Vec<rustmap_core::MediaId> {
+        self.player.take_restarts()
+    }
+
     /// Forgets the current cue (another show was opened).
     pub fn reset_cues(&mut self) {
         self.player.reset();

@@ -7,7 +7,7 @@ use crate::fixture::{Fixture, FixtureId, FixtureShape, LedSettings};
 use crate::lights::{DmxFixture, DmxFixtureId, DmxType, DmxTypeId};
 use crate::media::{Media, MediaId, MediaSource};
 use crate::output::{OutputConfig, OutputId};
-use crate::playback::{Cue, CueId, DmxGroup, DmxGroupId};
+use crate::playback::{Cue, CueId, CueScope, DmxGroup, DmxGroupId, MediaCue, SurfaceLook};
 use crate::surface::{Surface, SurfaceId};
 
 /// OSC remote control (cues, blackout, master) over UDP.
@@ -110,7 +110,9 @@ impl Project {
         let index = self.outputs.iter().position(|o| o.id == id)?;
         self.surfaces.retain(|s| s.output != id);
         self.fixtures.retain(|f| f.output != id);
-        Some(self.outputs.remove(index))
+        let o = self.outputs.remove(index);
+        self.prune_dmx_refs();
+        Some(o)
     }
 
     // ---- LED fixtures ----
@@ -245,15 +247,26 @@ impl Project {
 
     // ---- groups and cues ----
 
-    /// Drops group members and cue values whose fixture no longer exists.
+    /// Drops group members and cue entries whose fixture, surface or media
+    /// no longer exists.
     pub fn prune_dmx_refs(&mut self) {
-        let alive: std::collections::HashSet<DmxFixtureId> =
+        let fixtures: std::collections::HashSet<DmxFixtureId> =
             self.dmx_fixtures.iter().map(|f| f.id).collect();
+        let surfaces: std::collections::HashSet<SurfaceId> =
+            self.surfaces.iter().map(|s| s.id).collect();
+        let media: std::collections::HashSet<MediaId> = self.media.iter().map(|m| m.id).collect();
         for g in &mut self.dmx_groups {
-            g.fixtures.retain(|id| alive.contains(id));
+            g.fixtures.retain(|id| fixtures.contains(id));
         }
         for c in &mut self.cues {
-            c.values.retain(|id, _| alive.contains(id));
+            c.values.retain(|id, _| fixtures.contains(id));
+            c.surfaces.retain(|id, _| surfaces.contains(id));
+            c.media.retain(|id, _| media.contains(id));
+            for look in c.surfaces.values_mut() {
+                if look.media.is_some_and(|m| !media.contains(&m)) {
+                    look.media = None;
+                }
+            }
         }
     }
 
@@ -280,9 +293,17 @@ impl Project {
         self.dmx_groups.iter_mut().find(|g| g.id == id)
     }
 
-    /// Stores the current fixture values as a new cue: all fixtures, or only
-    /// `only`.
+    /// Stores the current state of the whole show as a new cue.
     pub fn record_cue(&mut self, only: Option<&[DmxFixtureId]>) -> CueId {
+        match only {
+            None => self.record_cue_of(None),
+            Some(f) => self.record_cue_of(Some((f, &[]))),
+        }
+    }
+
+    /// Stores a new cue: the whole show (`None`) or only some fixtures and
+    /// surfaces (then no videos).
+    pub fn record_cue_of(&mut self, only: Option<(&[DmxFixtureId], &[SurfaceId])>) -> CueId {
         let id = CueId(self.next_cue_id);
         self.next_cue_id += 1;
         self.cues.push(Cue {
@@ -290,17 +311,57 @@ impl Project {
             name: format!("Cue {}", id.0),
             fade: 0.0,
             values: BTreeMap::new(),
+            surfaces: BTreeMap::new(),
+            media: BTreeMap::new(),
+            scope: CueScope::default(),
+            restart: false,
+            partial: only.is_some(),
         });
-        self.update_cue(id, only);
+        self.capture_cue(id, only);
         id
     }
 
-    /// Overwrites a cue's values with the current ones (all fixtures, or `only`).
-    pub fn update_cue(&mut self, id: CueId, only: Option<&[DmxFixtureId]>) {
+    /// Overwrites a cue with the current state: the same items for a cue
+    /// recorded from a selection, else the whole show.
+    pub fn update_cue(&mut self, id: CueId) {
+        let Some(c) = self.cue(id) else {
+            return;
+        };
+        if c.partial {
+            let fixtures: Vec<_> = c.values.keys().copied().collect();
+            let surfaces: Vec<_> = c.surfaces.keys().copied().collect();
+            let media: Vec<_> = c.media.keys().copied().collect();
+            self.capture_cue(id, Some((&fixtures, &surfaces)));
+            let videos = self.video_states(Some(&media));
+            if let Some(c) = self.cue_mut(id) {
+                c.media = videos;
+            }
+        } else {
+            self.capture_cue(id, None);
+        }
+    }
+
+    fn video_states(&self, only: Option<&[MediaId]>) -> BTreeMap<MediaId, MediaCue> {
+        self.media
+            .iter()
+            .filter(|m| only.is_none_or(|o| o.contains(&m.id)))
+            .filter_map(|m| match &m.source {
+                MediaSource::Video { playback, .. } => Some((
+                    m.id,
+                    MediaCue {
+                        paused: playback.paused,
+                    },
+                )),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn capture_cue(&mut self, id: CueId, only: Option<(&[DmxFixtureId], &[SurfaceId])>) {
         let values: BTreeMap<_, _> = self
             .dmx_fixtures
             .iter()
-            .filter(|f| only.is_none_or(|o| o.contains(&f.id)))
+            .filter(|f| only.is_none_or(|(o, _)| o.contains(&f.id)))
             .filter_map(|f| {
                 let ty = self.dmx_type(f.type_id)?;
                 Some((
@@ -309,8 +370,21 @@ impl Project {
                 ))
             })
             .collect();
+        let surfaces: BTreeMap<_, _> = self
+            .surfaces
+            .iter()
+            .filter(|s| only.is_none_or(|(_, o)| o.contains(&s.id)))
+            .map(|s| (s.id, SurfaceLook::capture(s)))
+            .collect();
+        let media = if only.is_none() {
+            self.video_states(None)
+        } else {
+            BTreeMap::new()
+        };
         if let Some(c) = self.cue_mut(id) {
             c.values = values;
+            c.surfaces = surfaces;
+            c.media = media;
         }
     }
 
@@ -409,7 +483,9 @@ impl Project {
                 s.media = None;
             }
         }
-        Some(self.media.remove(index))
+        let m = self.media.remove(index);
+        self.prune_dmx_refs();
+        Some(m)
     }
 
     pub fn media_item(&self, id: MediaId) -> Option<&Media> {
@@ -429,7 +505,9 @@ impl Project {
 
     pub fn remove_surface(&mut self, id: SurfaceId) -> Option<Surface> {
         let index = self.surfaces.iter().position(|s| s.id == id)?;
-        Some(self.surfaces.remove(index))
+        let s = self.surfaces.remove(index);
+        self.prune_dmx_refs();
+        Some(s)
     }
 
     pub fn surface(&self, id: SurfaceId) -> Option<&Surface> {

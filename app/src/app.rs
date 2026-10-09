@@ -400,6 +400,12 @@ impl App {
         }
         let now = self.start.elapsed().as_secs_f64();
         self.osc.update(&mut self.project, &mut self.led, now);
+        let restarts = self.led.take_restarts();
+        if let Some(gfx) = &mut self.gfx {
+            for id in restarts {
+                gfx.media.seek(id, 0.0);
+            }
+        }
         self.led.update(&mut self.project, now, self.frame_dt);
     }
 

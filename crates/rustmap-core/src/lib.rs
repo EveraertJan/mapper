@@ -24,6 +24,9 @@ pub use lights::{
 };
 pub use media::{Media, MediaId, MediaSource, Playback};
 pub use output::{EdgeBlend, OutputConfig, OutputId, TestPattern};
-pub use playback::{Cue, CueId, CuePlayer, DmxGroup, DmxGroupId, GroupControl, group_controls};
+pub use playback::{
+    Cue, CueId, CuePlayer, CueScope, DmxGroup, DmxGroupId, GroupControl, MediaCue, SurfaceLook,
+    group_controls,
+};
 pub use project::{OscSettings, Project};
 pub use surface::{BlendMode, ColorAdjust, MASK_MAX_POINTS, Mask, Mesh, Shape, Surface, SurfaceId};
