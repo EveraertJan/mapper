@@ -29,6 +29,6 @@ pub use playback::{
     Cue, CueId, CuePlayer, CueScope, DmxGroup, DmxGroupId, GroupControl, MediaCue, SurfaceLook,
     group_controls,
 };
-pub use project::{OscSettings, Project};
+pub use project::{Layout, OscSettings, Project};
 pub use shaders::{FilterUse, ParamDef, ShaderInfo};
 pub use surface::{BlendMode, ColorAdjust, MASK_MAX_POINTS, Mask, Mesh, Shape, Surface, SurfaceId};

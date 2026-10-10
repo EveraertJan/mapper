@@ -74,6 +74,8 @@ struct Graphics {
     media: MediaManager,
     quad_states: HashMap<SurfaceId, QuadState>,
     shaders: crate::shaders::ShaderLibrary,
+    /// Images for surfaces whose shader chain has own passes.
+    pass_targets: HashMap<SurfaceId, rustmap_render::PassTargets>,
     control: ControlWindow,
     outputs: BTreeMap<OutputId, OutputRuntime>,
     previews: HashMap<OutputId, egui::TextureId>,
@@ -161,6 +163,7 @@ impl App {
             media: MediaManager::default(),
             quad_states: HashMap::new(),
             shaders: crate::shaders::ShaderLibrary::default(),
+            pass_targets: HashMap::new(),
             gpu,
             control,
             outputs: BTreeMap::new(),
@@ -841,6 +844,27 @@ impl App {
         let time = self.start.elapsed().as_secs_f32();
         gfx.shaders
             .prepare(&gfx.quads, &gfx.gpu.device, &mut self.project);
+        // Images for own-pass shader chains, at their input's size.
+        let mut needed = Vec::new();
+        for s in self.project.surfaces.iter().filter(|s| s.visible) {
+            let Some((chain, _)) = gfx.shaders.chain(s.id) else {
+                continue;
+            };
+            let Some(binding) = s.media.and_then(|m| gfx.media.binding(m)) else {
+                continue;
+            };
+            if chain.pass_count() > 0 {
+                needed.push((s.id, binding.size));
+            }
+        }
+        gfx.pass_targets
+            .retain(|id, _| needed.iter().any(|(n, _)| n == id));
+        for (id, size) in needed {
+            if gfx.pass_targets.get(&id).is_none_or(|t| t.size() != size) {
+                gfx.pass_targets
+                    .insert(id, gfx.quads.pass_targets(&gfx.gpu.device, size));
+            }
+        }
         let mut encoder = gfx
             .gpu
             .device
@@ -893,6 +917,7 @@ impl App {
                         input: rustmap_geom::quad_from_arrays(&s.input),
                         mask: s.mask.as_ref(),
                         filter: chain.map(|c| c.0),
+                        passes: gfx.pass_targets.get(&s.id),
                         params: chain
                             .map_or([0.0; rustmap_core::shaders::MAX_CHAIN_PARAMS], |c| c.1),
                         time,

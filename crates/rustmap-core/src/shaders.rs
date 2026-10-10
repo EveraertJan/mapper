@@ -32,6 +32,10 @@ pub struct FilterUse {
     /// Parameter values, in the order the shader declares them.
     #[serde(default)]
     pub params: Vec<f32>,
+    /// Render the shaders above into an image first, so this one's
+    /// `rm_sample` reads their result (costs a render pass).
+    #[serde(default)]
+    pub own_pass: bool,
 }
 
 fn yes() -> bool {
@@ -66,6 +70,7 @@ impl FilterUse {
             shader: info.id.clone(),
             enabled: true,
             params: info.params.iter().map(|p| p.default).collect(),
+            own_pass: false,
         }
     }
 
@@ -197,6 +202,7 @@ pub fn chain_from_color(c: &ColorAdjust) -> Vec<FilterUse> {
         out.push(FilterUse {
             shader: "color".into(),
             enabled: true,
+            own_pass: false,
             params: vec![
                 c.brightness,
                 c.contrast,
@@ -213,6 +219,7 @@ pub fn chain_from_color(c: &ColorAdjust) -> Vec<FilterUse> {
             shader: "posterize".into(),
             enabled: true,
             params: vec![f32::from(c.posterize)],
+            own_pass: false,
         });
     }
     out
@@ -264,6 +271,7 @@ mod tests {
             shader: "x".into(),
             enabled: true,
             params: vec![7.0],
+            own_pass: false,
         };
         f.fit(&info);
         assert_eq!(f.params, vec![1.0, 2.0]);

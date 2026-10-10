@@ -441,7 +441,7 @@ pub(crate) fn cue_panel(
     view: &ViewData<'_>,
     actions: &mut Vec<UiAction>,
 ) {
-    let panel = if state.cues_open {
+    let panel = if project.layout.cues_open {
         egui::Panel::bottom("cues_open")
             .resizable(true)
             .default_size(180.0)
@@ -744,7 +744,7 @@ fn cues(
     let any = !project.cues.is_empty();
     ui.horizontal(|ui| {
         let (rect, response) = ui.allocate_exact_size(egui::vec2(14.0, 14.0), Sense::click());
-        let openness = if state.cues_open { 1.0 } else { 0.0 };
+        let openness = if project.layout.cues_open { 1.0 } else { 0.0 };
         egui::collapsing_header::paint_default_icon(
             &mut ui.new_child(egui::UiBuilder::new().max_rect(rect)),
             openness,
@@ -753,9 +753,9 @@ fn cues(
         let title =
             ui.add(egui::Label::new(egui::RichText::new("CUES").strong()).sense(Sense::click()));
         if response.clicked() || title.clicked() {
-            state.cues_open = !state.cues_open;
+            project.layout.cues_open = !project.layout.cues_open;
         }
-        title.on_hover_text(if state.cues_open {
+        title.on_hover_text(if project.layout.cues_open {
             "Collapse the cue list (buttons stay)"
         } else {
             "Show the cue list"
@@ -825,7 +825,7 @@ fn cues(
             }
         }
     });
-    if !state.cues_open {
+    if !project.layout.cues_open {
         return;
     }
     osc_row(ui, project, view);

@@ -295,7 +295,10 @@ fn set_surface_floats(s: &mut Surface, filters: bool, geometry: bool, v: &[f32])
 fn same_chain(a: &Surface, b: &Surface) -> bool {
     a.filters.len() == b.filters.len()
         && a.filters.iter().zip(&b.filters).all(|(x, y)| {
-            x.shader == y.shader && x.enabled == y.enabled && x.params.len() == y.params.len()
+            x.shader == y.shader
+                && x.enabled == y.enabled
+                && x.own_pass == y.own_pass
+                && x.params.len() == y.params.len()
         })
 }
 
@@ -782,6 +785,7 @@ mod tests {
             x.filters = vec![crate::FilterUse {
                 shader: "color".into(),
                 enabled: true,
+                own_pass: false,
                 params: vec![0.4],
             }];
             x.media = Some(b);

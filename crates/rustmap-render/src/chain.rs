@@ -4,9 +4,9 @@
 //! `effect__rm0`, a helper `luma` becomes `luma__rm0`, …) so two shaders can
 //! use the same names, gets `rm_param(k)` / `p_<name>()` accessors that read
 //! its own slice of the parameter block, and a final `effect` runs them in
-//! order. One draw, no intermediate textures; the price is that
-//! `rm_sample` in a later shader sees the input, not the earlier shaders'
-//! result.
+//! order. Without "own pass" shaders that is one draw with no intermediate
+//! images, and `rm_sample` sees the input; a shader marked own pass starts a
+//! new part of the chain that reads the earlier parts' result.
 
 use rustmap_core::shaders::MAX_CHAIN_PARAMS;
 
@@ -17,6 +17,9 @@ pub struct ChainShader<'a> {
     pub source: &'a str,
     /// Declared parameter names, in order.
     pub params: Vec<String>,
+    /// Bake everything above into an image first, so this shader's
+    /// `rm_sample` reads it (an extra render pass).
+    pub own_pass: bool,
 }
 
 /// Where each shader's own lines sit in the composed module.
@@ -129,14 +132,16 @@ fn rename(source: &str, names: &[String], suffix: &str) -> String {
 }
 
 /// The body that replaces the default `effect` in `quad.wgsl`.
+/// `offset`: where this part of the chain's parameters start in the block.
 pub(crate) fn compose(
     chain: &[ChainShader<'_>],
     first_line: usize,
+    offset: usize,
 ) -> Result<(String, LineMap), String> {
     let mut out = String::new();
     let mut blocks = Vec::new();
     let mut line = first_line;
-    let mut offset = 0usize;
+    let mut offset = offset;
     let mut calls = String::new();
     for (i, shader) in chain.iter().enumerate() {
         if !shader.source.contains("fn effect(") {
@@ -209,14 +214,16 @@ mod tests {
                 id: "a",
                 source: src,
                 params: vec!["amount".into()],
+                own_pass: false,
             },
             ChainShader {
                 id: "b",
                 source: src,
                 params: vec!["amount".into()],
+                own_pass: false,
             },
         ];
-        let (out, map) = compose(&chain, 100).unwrap();
+        let (out, map) = compose(&chain, 100, 0).unwrap();
         assert!(out.contains("fn luma__rm0(") && out.contains("fn luma__rm1("));
         assert!(out.contains("luma__rm1(c.rgb) * p_amount__rm1() * rm_param__rm1(0u)"));
         // Each shader reads its own slot.
@@ -248,8 +255,9 @@ mod tests {
                 id: "x",
                 source: src,
                 params: params.clone(),
+                own_pass: false,
             })
             .collect();
-        assert!(compose(&chain, 0).is_err());
+        assert!(compose(&chain, 0, 0).is_err());
     }
 }

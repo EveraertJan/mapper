@@ -281,10 +281,8 @@ pub struct UiState {
     input_zoom: HashMap<MediaId, zoom::CanvasZoom>,
     /// Zoom of the output canvas, per output.
     output_zoom: HashMap<OutputId, zoom::CanvasZoom>,
-    /// Console: cue list expanded (collapsed keeps only its buttons).
-    pub cues_open: bool,
-    /// Filters column expanded (collapsed to a thin strip by default).
-    pub filters_open: bool,
+    /// Set when a show is opened: its column widths are applied once.
+    pub apply_layout: bool,
     /// Handle of the selected surface that arrow keys move: a corner (TL, TR,
     /// BR, BL), a mesh point, or a mask point, depending on [`Self::layer`].
     /// For a selected fixture: one of its handles.
@@ -310,8 +308,7 @@ impl Default for UiState {
             media_follows: None,
             input_zoom: HashMap::new(),
             output_zoom: HashMap::new(),
-            cues_open: true,
-            filters_open: false,
+            apply_layout: true,
             selected_corner: None,
             layer: EditLayer::Warp,
             snapping: true,
@@ -522,8 +519,9 @@ pub fn draw(
     // The cue list runs along the bottom, under all four columns.
     lights::cue_panel(ui, project, state, view, &mut actions);
 
-    // Four columns, in the order a signal travels:
-    // 1 input sources · 2 input mapping · 3 outputs · 4 output mapping.
+    // Five columns, in the order a signal travels. Any can fold to its
+    // title strip (click the strip); the open one that takes the space left
+    // is output mapping, else input mapping, else the last one open.
     let before = (
         state.selected_dmx,
         state.selected_surface,
@@ -531,136 +529,62 @@ pub fn draw(
         state.selected,
     );
     let total = ui.available_width();
-    let side = |style: &egui::Style| {
-        egui::Frame::side_top_panel(style).inner_margin(egui::Margin {
-            left: 0,
-            right: 6,
-            top: 0,
-            bottom: 0,
-        })
+    let apply = std::mem::take(&mut state.apply_layout);
+    let defaults = [
+        220.0,
+        ((total - 220.0 - 270.0) * 0.42).max(260.0),
+        250.0,
+        270.0,
+        400.0,
+    ];
+    let collapsed = project.layout.collapsed;
+    let flex = [4usize, 1, 3, 0, 2].into_iter().find(|i| !collapsed[*i]);
+    let split = flex.unwrap_or(COLUMNS.len());
+    let mut cx = ColumnCtx {
+        project,
+        state,
+        view,
+        actions: &mut actions,
     };
-    egui::Panel::left("col_inputs")
-        .resizable(true)
-        .default_size(220.0)
-        .size_range(170.0..=380.0)
-        .frame(side(ui.style()))
+    for (i, default) in defaults.iter().enumerate().take(split) {
+        side_column(ui, i, true, &mut cx, apply, *default);
+    }
+    for i in (split + 1..COLUMNS.len()).rev() {
+        side_column(ui, i, false, &mut cx, apply, defaults[i]);
+    }
+    egui::CentralPanel::default()
+        .frame(
+            egui::Frame::central_panel(ui.style()).inner_margin(egui::Margin {
+                left: 0,
+                right: 8,
+                top: 0,
+                bottom: 0,
+            }),
+        )
         .show(ui, |ui| {
-            column(
-                ui,
-                "1",
-                "INPUTS",
-                "Media: images, videos and NDI sources",
-                |ui| {
-                    egui::ScrollArea::vertical().show(ui, |ui| {
-                        media::list(ui, project, state, view, &mut actions);
-                    });
-                },
-            );
-        });
-    egui::Panel::left("col_input_mapping")
-        .resizable(true)
-        .default_size(((total - 220.0 - 270.0) * 0.42).max(260.0))
-        .min_size(200.0)
-        .frame(side(ui.style()))
-        .show(ui, |ui| {
-            column(
-                ui,
-                "2",
-                "INPUT MAPPING",
-                "Which part of the selected input each surface uses",
-                |ui| input::show(ui, project, state, view),
-            );
-        });
-    if state.filters_open {
-        egui::Panel::left("col_filters")
-            .resizable(true)
-            .default_size(250.0)
-            .size_range(200.0..=400.0)
-            .frame(side(ui.style()))
-            .show(ui, |ui| {
+            if let Some(i) = flex {
+                let (number, title, help) = COLUMNS[i];
                 let strip = column(
                     ui,
-                    "3",
-                    "FILTERS",
-                    "Color and playback, between input and output. Click here to collapse.",
+                    number,
+                    title,
+                    &format!("{help}. Click to fold."),
                     |ui| {
-                        egui::ScrollArea::vertical().show(ui, |ui| {
-                            ui.add_space(6.0);
-                            filters::show(ui, project, state, view, &mut actions);
-                        });
+                        column_content(ui, i, &mut cx);
                     },
                 );
                 if strip.clicked() {
-                    state.filters_open = false;
+                    cx.project.layout.collapsed[i] = true;
                 }
-            });
-    } else {
-        egui::Panel::left("col_filters_closed")
-            .resizable(false)
-            .exact_size(STRIP)
-            .frame(side(ui.style()).inner_margin(0))
-            .show(ui, |ui| {
-                let strip = column(
-                    ui,
-                    "3",
-                    "FILTERS",
-                    "Filters: color and video playback. Click to open.",
-                    |_| {},
-                );
-                if strip.clicked() {
-                    state.filters_open = true;
-                }
-            });
-    }
-    egui::Panel::left("col_outputs")
-        .resizable(true)
-        .default_size(270.0)
-        .size_range(200.0..=440.0)
-        .frame(side(ui.style()))
-        .show(ui, |ui| {
-            column(
-                ui,
-                "4",
-                "OUTPUTS",
-                "Projectors with their surfaces and LED fixtures, and DMX fixtures",
-                |ui| {
-                    egui::ScrollArea::vertical().show(ui, |ui| {
-                        ui.add_space(6.0);
-                        outputs::list(ui, project, state);
-                        ui.add_space(10.0);
-                        surfaces::list(ui, project, state);
-                        ui.add_space(10.0);
-                        fixtures::list(ui, project, state);
-                        ui.add_space(10.0);
-                        lights::list(ui, project, state, &mut actions);
-                        ui.add_space(14.0);
-                        // Settings of what is selected in this column.
-                        if state.selected_dmx.is_some() {
-                            egui::CollapsingHeader::new(
-                                egui::RichText::new("DMX fixture").strong(),
-                            )
-                            .default_open(true)
-                            .show(ui, |ui| lights::inspector(ui, project, state, &mut actions));
-                        } else if state.selected_fixture.is_some() {
-                            egui::CollapsingHeader::new(
-                                egui::RichText::new("LED fixture").strong(),
-                            )
-                            .default_open(true)
-                            .show(ui, |ui| fixtures::inspector(ui, project, state));
-                        }
-                        egui::CollapsingHeader::new(
-                            egui::RichText::new("Output settings").strong(),
-                        )
-                        .default_open(
-                            state.selected_dmx.is_none() && state.selected_fixture.is_none(),
-                        )
-                        .show(ui, |ui| outputs::inspector(ui, project, state, view));
-                    });
-                },
-            );
+            } else {
+                ui.centered_and_justified(|ui| {
+                    ui.weak("Every column is folded: click a title strip to open it.");
+                });
+            }
         });
+    let ColumnCtx { state, .. } = cx;
 
-    // Picking something in a column shows where it is edited in column 5.
+    // Picking something shows where it is edited in column 5.
     let after = (
         state.selected_dmx,
         state.selected_surface,
@@ -677,42 +601,195 @@ pub fn draw(
         }
     }
 
-    egui::CentralPanel::default()
-        .frame(
-            egui::Frame::central_panel(ui.style()).inner_margin(egui::Margin {
-                left: 0,
-                right: 8,
-                top: 0,
-                bottom: 0,
-            }),
-        )
-        .show(ui, |ui| {
-            column(
-                ui,
-                "5",
-                "OUTPUT MAPPING",
-                "Where everything lands on the selected output, or the DMX console",
-                |ui| {
-                    ui.add_space(6.0);
-                    if state.editor_mode == EditorMode::Output && state.selected_surface.is_some() {
-                        egui::Panel::bottom("surface_settings")
-                            .resizable(true)
-                            .default_size(230.0)
-                            .min_size(60.0)
-                            .show(ui, |ui| {
-                                egui::ScrollArea::vertical().show(ui, |ui| {
-                                    ui.add_space(4.0);
-                                    ui.strong("Surface settings");
-                                    surfaces::inspector(ui, project, state, view, &mut actions);
-                                });
-                            });
-                    }
-                    editor::show(ui, project, state, view);
-                },
-            );
-        });
-
     actions
+}
+
+/// Number, title and help of each column.
+const COLUMNS: [(&str, &str, &str); 5] = [
+    ("1", "INPUTS", "Media: images, videos and NDI sources"),
+    (
+        "2",
+        "INPUT MAPPING",
+        "Which part of the selected input each surface uses",
+    ),
+    (
+        "3",
+        "FILTERS",
+        "Shaders and playback, between input and output",
+    ),
+    (
+        "4",
+        "OUTPUTS",
+        "Projectors with their surfaces and LED fixtures, and DMX fixtures",
+    ),
+    (
+        "5",
+        "OUTPUT MAPPING",
+        "Where everything lands on the selected output, or the DMX console",
+    ),
+];
+
+/// Width limits of each column when it is a side panel.
+const RANGES: [(f32, f32); 5] = [
+    (170.0, 380.0),
+    (200.0, 2000.0),
+    (200.0, 400.0),
+    (200.0, 440.0),
+    (300.0, 2000.0),
+];
+
+/// What a column's contents need.
+struct ColumnCtx<'p, 's, 'v, 'a, 'w> {
+    project: &'p mut Project,
+    state: &'s mut UiState,
+    view: &'v ViewData<'w>,
+    actions: &'a mut Vec<UiAction>,
+}
+
+/// One column as a side panel (left of the flexible column, or right of it),
+/// folded to its strip or open with its contents. Remembers its width.
+fn side_column(
+    ui: &mut egui::Ui,
+    i: usize,
+    left: bool,
+    cx: &mut ColumnCtx<'_, '_, '_, '_, '_>,
+    apply: bool,
+    default: f32,
+) {
+    let (number, title, help) = COLUMNS[i];
+    let side = if left { "l" } else { "r" };
+    let frame = |style: &egui::Style| {
+        egui::Frame::side_top_panel(style).inner_margin(egui::Margin {
+            left: 0,
+            right: 6,
+            top: 0,
+            bottom: 0,
+        })
+    };
+    let make = |id: String| {
+        if left {
+            egui::Panel::left(id)
+        } else {
+            egui::Panel::right(id)
+        }
+    };
+    if cx.project.layout.collapsed[i] {
+        make(format!("col{i}_{side}_folded"))
+            .resizable(false)
+            .exact_size(STRIP)
+            .frame(frame(ui.style()).inner_margin(0))
+            .show(ui, |ui| {
+                let strip = column(
+                    ui,
+                    number,
+                    title,
+                    &format!("{help}. Click to open."),
+                    |_| {},
+                );
+                if strip.clicked() {
+                    cx.project.layout.collapsed[i] = false;
+                }
+            });
+        return;
+    }
+    let saved = cx.project.layout.widths[i];
+    let (min, max) = RANGES[i];
+    let mut panel = make(format!("col{i}_{side}"))
+        .resizable(true)
+        .default_size(if saved > 0.0 { saved } else { default })
+        .size_range(min..=max)
+        .frame(frame(ui.style()));
+    if apply && saved > 0.0 {
+        // A show was just opened: take its widths.
+        panel = panel.exact_size(saved.clamp(min, max));
+    }
+    let response = panel.show(ui, |ui| {
+        let strip = column(
+            ui,
+            number,
+            title,
+            &format!("{help}. Click to fold."),
+            |ui| {
+                column_content(ui, i, cx);
+            },
+        );
+        if strip.clicked() {
+            cx.project.layout.collapsed[i] = true;
+        }
+    });
+    let width = response.response.rect.width();
+    if (width - cx.project.layout.widths[i]).abs() > 0.5 {
+        cx.project.layout.widths[i] = width;
+    }
+}
+
+/// What each column shows.
+fn column_content(ui: &mut egui::Ui, i: usize, cx: &mut ColumnCtx<'_, '_, '_, '_, '_>) {
+    let ColumnCtx {
+        project,
+        state,
+        view,
+        actions,
+    } = cx;
+    let (project, state, view): (&mut Project, &mut UiState, &ViewData<'_>) =
+        (project, state, view);
+    match i {
+        0 => {
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                media::list(ui, project, state, view, actions);
+            });
+        }
+        1 => input::show(ui, project, state, view),
+        2 => {
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                ui.add_space(6.0);
+                filters::show(ui, project, state, view, actions);
+            });
+        }
+        3 => {
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                ui.add_space(6.0);
+                outputs::list(ui, project, state);
+                ui.add_space(10.0);
+                surfaces::list(ui, project, state);
+                ui.add_space(10.0);
+                fixtures::list(ui, project, state);
+                ui.add_space(10.0);
+                lights::list(ui, project, state, actions);
+                ui.add_space(14.0);
+                // Settings of what is selected in this column.
+                if state.selected_dmx.is_some() {
+                    egui::CollapsingHeader::new(egui::RichText::new("DMX fixture").strong())
+                        .default_open(true)
+                        .show(ui, |ui| lights::inspector(ui, project, state, actions));
+                } else if state.selected_fixture.is_some() {
+                    egui::CollapsingHeader::new(egui::RichText::new("LED fixture").strong())
+                        .default_open(true)
+                        .show(ui, |ui| fixtures::inspector(ui, project, state));
+                }
+                egui::CollapsingHeader::new(egui::RichText::new("Output settings").strong())
+                    .default_open(state.selected_dmx.is_none() && state.selected_fixture.is_none())
+                    .show(ui, |ui| outputs::inspector(ui, project, state, view));
+            });
+        }
+        _ => {
+            ui.add_space(6.0);
+            if state.editor_mode == EditorMode::Output && state.selected_surface.is_some() {
+                egui::Panel::bottom("surface_settings")
+                    .resizable(true)
+                    .default_size(230.0)
+                    .min_size(60.0)
+                    .show(ui, |ui| {
+                        egui::ScrollArea::vertical().show(ui, |ui| {
+                            ui.add_space(4.0);
+                            ui.strong("Surface settings");
+                            surfaces::inspector(ui, project, state, view, actions);
+                        });
+                    });
+            }
+            editor::show(ui, project, state, view);
+        }
+    }
 }
 
 /// Width of a column's vertical title strip.

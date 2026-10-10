@@ -32,6 +32,7 @@ fn chain(shaders: &[(String, String)]) -> Vec<rustmap_render::ChainShader<'_>> {
                 .into_iter()
                 .map(|p| p.id)
                 .collect(),
+            own_pass: false,
         })
         .collect()
 }
@@ -44,6 +45,8 @@ struct ExtraM5 {
     /// Shader chain: (id, WGSL source).
     chain: Vec<(String, String)>,
     params: Vec<f32>,
+    /// Chain entries that get their own pass.
+    own_pass: Vec<usize>,
 }
 
 struct Extra {
@@ -111,10 +114,20 @@ impl Ctx {
         let pattern = self.patterns.create_state(device);
         let state = self.quads.create_state(device);
         let filter = (!extra.m5.chain.is_empty()).then(|| {
+            let mut c = chain(&extra.m5.chain);
+            for i in &extra.m5.own_pass {
+                c[*i].own_pass = true;
+            }
             self.quads
-                .compile_chain(device, &chain(&extra.m5.chain))
+                .compile_chain(device, &c)
                 .expect("test chain compiles")
         });
+        let passes = match (&filter, fill) {
+            (Some(f), QuadFill::Image(b)) if f.pass_count() > 0 => {
+                Some(self.quads.pass_targets(device, b.size))
+            }
+            _ => None,
+        };
         let mut params = [0.0; rustmap_core::shaders::MAX_CHAIN_PARAMS];
         params[..extra.m5.params.len()].copy_from_slice(&extra.m5.params);
         let mut encoder = device.create_command_encoder(&Default::default());
@@ -147,6 +160,7 @@ impl Ctx {
                 mask: extra.m5.mask.as_ref(),
                 filter: filter.as_ref(),
                 params,
+                passes: passes.as_ref(),
                 time: 0.0,
             }],
         );
@@ -697,4 +711,56 @@ fn built_in_shaders_compile_alone_and_chained() {
     ctx.quads
         .compile_chain(&ctx.gpu.device, &chain(&all))
         .expect("whole chain");
+}
+
+#[test]
+fn own_pass_lets_a_shader_sample_the_chain_above() {
+    let Some(ctx) = ctx() else { return };
+    let b = one_pixel(&ctx, [200, 100, 50, 255]);
+    // Ignores its color and samples instead: sees the input, or with its
+    // own pass, the inverted image from the shader above.
+    let resample = (
+        "resample".to_owned(),
+        "fn effect(color: vec4<f32>, uv: vec2<f32>, src_uv: vec2<f32>) -> vec4<f32> {\n    return rm_sample(src_uv);\n}".to_owned(),
+    );
+    let run = |own: Vec<usize>| {
+        let out = ctx.render_with(
+            TestPattern::Off,
+            full(),
+            1.0,
+            QuadFill::Image(&b),
+            extra(ExtraM5 {
+                chain: vec![builtin("invert"), resample.clone()],
+                params: vec![1.0],
+                own_pass: own,
+                ..Default::default()
+            }),
+        );
+        px(&out, 256, 256)
+    };
+    let single = run(vec![]);
+    assert!(
+        single[0].abs_diff(200) <= 2,
+        "one pass samples the input: {single:?}"
+    );
+    let two = run(vec![1]);
+    assert!(
+        two[0].abs_diff(55) <= 2 && two[1].abs_diff(155) <= 2,
+        "own pass: {two:?}"
+    );
+    // Three parts (two passes) still work and parameters keep their slots.
+    let three = ctx.render_with(
+        TestPattern::Off,
+        full(),
+        1.0,
+        QuadFill::Image(&b),
+        extra(ExtraM5 {
+            chain: vec![builtin("invert"), builtin("invert"), resample.clone()],
+            params: vec![1.0, 0.0],
+            own_pass: vec![1, 2],
+            ..Default::default()
+        }),
+    );
+    let p = px(&three, 256, 256);
+    assert!(p[0].abs_diff(55) <= 2, "{p:?}");
 }

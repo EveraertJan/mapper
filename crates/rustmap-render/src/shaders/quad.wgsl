@@ -177,3 +177,29 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     color = vec4<f32>(clamp(straight.rgb, vec3<f32>(0.0), vec3<f32>(1.0)) * a, a);
     return color * (q.opacity * mask);
 }
+
+// ---- own-pass shaders ----
+// A shader marked "own pass" sees everything above it baked into an image:
+// those shaders run here, as one full-frame triangle in input space
+// (uv = src_uv), into an image the size of the input.
+
+struct PassOut {
+    @builtin(position) pos: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+};
+
+@vertex
+fn vs_pass(@builtin(vertex_index) i: u32) -> PassOut {
+    let p = vec2<f32>(f32((i << 1u) & 2u), f32(i & 2u));
+    var out: PassOut;
+    out.pos = vec4<f32>(p.x * 2.0 - 1.0, 1.0 - p.y * 2.0, 0.0, 1.0);
+    out.uv = p;
+    return out;
+}
+
+@fragment
+fn fs_pass(in: PassOut) -> @location(0) vec4<f32> {
+    let r = effect(rm_sample(in.uv), in.uv, in.uv);
+    let a = clamp(r.a, 0.0, 1.0);
+    return vec4<f32>(clamp(r.rgb, vec3<f32>(0.0), vec3<f32>(1.0)) * a, a);
+}

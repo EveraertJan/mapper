@@ -1,6 +1,7 @@
 //! Zoom and pan for the input and output canvases.
 //!
-//! - Pinch (trackpad) or Cmd/Ctrl + scroll: zoom around the pointer.
+//! - Pinch (trackpad) or Cmd/Ctrl + scroll: zoom around the pointer, from
+//!   50% (to see around the frame) to 4000%, pausing at 100%.
 //! - Scroll / two-finger swipe while zoomed: pan.
 //! - Middle-drag, or Space + drag: pan.
 //! - *Fit* (top right while zoomed) or double-click with the middle button:
@@ -9,6 +10,8 @@
 use egui::{Key, PointerButton, Pos2, Rect, Response, Vec2};
 
 const MAX_ZOOM: f32 = 40.0;
+/// Down to half the fitted size, to see around the frame.
+const MIN_ZOOM: f32 = 0.5;
 
 /// How a canvas is zoomed. `pan` moves the content's center away from the
 /// center of its fitted rect, in screen points.
@@ -29,7 +32,7 @@ impl Default for CanvasZoom {
 
 impl CanvasZoom {
     pub fn is_fit(&self) -> bool {
-        self.zoom <= 1.0 && self.pan == Vec2::ZERO
+        self.zoom == 1.0 && self.pan == Vec2::ZERO
     }
 
     /// Where the content is drawn, given where it fits unzoomed.
@@ -84,17 +87,23 @@ impl CanvasZoom {
 
     /// Zooms to `zoom`, keeping the content under `p` where it is.
     fn zoom_at(&mut self, fitted: Rect, p: Pos2, zoom: f32) {
-        let zoom = zoom.clamp(1.0, MAX_ZOOM);
+        let zoom = zoom.clamp(MIN_ZOOM, MAX_ZOOM);
+        // Passing through 100% stops there: an easy way back to the fit.
+        if (self.zoom > 1.0 && zoom < 1.0) || (self.zoom < 1.0 && zoom > 1.0) {
+            *self = Self::default();
+            return;
+        }
         let center = fitted.center() + self.pan;
         let new_center = p - (p - center) * (zoom / self.zoom);
         self.zoom = zoom;
         self.pan = new_center - fitted.center();
     }
 
-    /// Keeps some of the content on screen; at 1× it snaps back to fit.
+    /// Keeps some of the content on screen. At or below 100% the frame stays
+    /// centered.
     fn clamp(&mut self, fitted: Rect) {
         if self.zoom <= 1.0 {
-            *self = Self::default();
+            self.pan = Vec2::ZERO;
             return;
         }
         let half = fitted.size() * self.zoom * 0.5;
@@ -149,13 +158,19 @@ mod tests {
     }
 
     #[test]
-    fn back_to_one_is_fit() {
+    fn zooming_out_stops_at_fit_then_goes_to_half() {
         let fitted = Rect::from_min_size(Pos2::ZERO, egui::vec2(400.0, 200.0));
         let mut z = CanvasZoom::default();
         z.zoom_at(fitted, Pos2::new(10.0, 10.0), 3.0);
         assert!(!z.is_fit());
+        // From 300% straight to 50%: stops at the fit first.
         z.zoom_at(fitted, Pos2::new(10.0, 10.0), 0.5);
-        z.clamp(fitted);
         assert!(z.is_fit());
+        // Further out, centered, never below half.
+        z.zoom_at(fitted, Pos2::new(10.0, 10.0), 0.1);
+        z.clamp(fitted);
+        assert_eq!(z.zoom, 0.5);
+        assert_eq!(z.apply(fitted).center(), fitted.center());
+        assert!(!z.is_fit());
     }
 }

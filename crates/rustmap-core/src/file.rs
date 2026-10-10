@@ -261,6 +261,7 @@ mod tests {
         p.surface_mut(s).unwrap().filters = vec![crate::FilterUse {
             shader: "posterize".into(),
             enabled: true,
+            own_pass: false,
             params: vec![3.0],
         }];
         p.shader_sources
@@ -390,5 +391,17 @@ mod tests {
         assert!(p.surface(s).unwrap().color.is_identity());
         let look = &p.cue(cue).unwrap().surfaces[&s];
         assert_eq!(look.filters[0].params[1], 2.0);
+    }
+
+    #[test]
+    fn column_layout_is_saved() {
+        let dir = temp_dir("layout");
+        let file = dir.join("show.rustmap");
+        let mut p = Project::default();
+        p.layout.collapsed[0] = true;
+        p.layout.widths[3] = 300.0;
+        p.layout.cues_open = false;
+        save(&p, &file).unwrap();
+        assert_eq!(load(&file).unwrap().layout, p.layout);
     }
 }

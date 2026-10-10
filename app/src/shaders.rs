@@ -114,7 +114,7 @@ impl Default for ShaderLibrary {
     }
 }
 
-fn hash_of(parts: &[(&str, &str)]) -> u64 {
+fn hash_of(parts: &[(&str, &str, bool)]) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     parts.hash(&mut h);
     h.finish()
@@ -206,7 +206,7 @@ impl ShaderLibrary {
             let error = match &s.info {
                 Err(e) => Some(e.clone()),
                 Ok(info) => {
-                    let key = hash_of(&[(id.as_str(), s.source.as_str())]);
+                    let key = hash_of(&[(id.as_str(), s.source.as_str(), false)]);
                     self.alone
                         .entry(key)
                         .or_insert_with(|| {
@@ -214,6 +214,7 @@ impl ShaderLibrary {
                                 id,
                                 source: &s.source,
                                 params: info.params.iter().map(|p| p.id.clone()).collect(),
+                                own_pass: false,
                             }];
                             quads.compile_chain(device, &chain).err()
                         })
@@ -275,7 +276,7 @@ impl ShaderLibrary {
                             }
                             at += 1;
                         }
-                        parts.push((f.shader.as_str(), s.source.as_str(), info));
+                        parts.push((f.shader.as_str(), s.source.as_str(), info, f.own_pass));
                     }
                 }
             }
@@ -286,16 +287,17 @@ impl ShaderLibrary {
             let key = hash_of(
                 &parts
                     .iter()
-                    .map(|(id, src, _)| (*id, *src))
+                    .map(|(id, src, _, own)| (*id, *src, *own))
                     .collect::<Vec<_>>(),
             );
             let result = self.compiled.entry(key).or_insert_with(|| {
                 let chain: Vec<_> = parts
                     .iter()
-                    .map(|(id, src, info)| ChainShader {
+                    .map(|(id, src, info, own)| ChainShader {
                         id,
                         source: src,
                         params: info.params.iter().map(|p| p.id.clone()).collect(),
+                        own_pass: *own,
                     })
                     .collect();
                 let r = quads.compile_chain(device, &chain);

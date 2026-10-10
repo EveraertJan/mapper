@@ -152,6 +152,14 @@ fn chain(
                     return;
                 };
                 f.fit(&entry.info);
+                if i > 0 {
+                    ui.checkbox(&mut f.own_pass, egui::RichText::new("Own pass").small())
+                        .on_hover_text(
+                            "Render the shaders above into an image first, so this shader \
+                             sees their result when it samples other pixels (pixelate, \
+                             wave, RGB split…). Costs an extra render pass.",
+                        );
+                }
                 ui.add_enabled_ui(f.enabled, |ui| {
                     egui::Grid::new("params")
                         .num_columns(2)

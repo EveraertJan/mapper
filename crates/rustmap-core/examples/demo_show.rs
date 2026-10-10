@@ -63,6 +63,7 @@ fn main() {
             surface.filters = vec![rustmap_core::FilterUse {
                 shader: "color".into(),
                 enabled: true,
+                own_pass: false,
                 params: vec![0.0, 1.0, 1.5, 120.0, 1.0, 1.0, 1.0],
             }];
             surface.name = "Bent".into();

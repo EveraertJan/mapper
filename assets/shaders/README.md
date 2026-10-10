@@ -26,5 +26,5 @@ fn effect(color: vec4<f32>, uv: vec2<f32>, src_uv: vec2<f32>) -> vec4<f32> {
 - `// @name` and `// @description` are what the Filters column shows.
 - Helpers: `rm_time()` (seconds, for animation), `rm_sample(uv)` (the input at any position, straight alpha), `rm_size()` (input size in pixels).
 - The file name (without `.wgsl`) is the shader's id. Your own helper functions and constants are fine; each shader in a chain gets its own copy of them.
-- `rm_sample` reads the input, not the result of shaders earlier in the chain (the whole chain runs in one pass).
+- `rm_sample` reads the input, not the result of the shaders above it: the chain runs in one pass. Tick **Own pass** on a shader to render everything above it into an image first; its `rm_sample` then reads that (an extra render pass at the input's resolution). In such a pass `uv` equals `src_uv`.
 - `filter` is a reserved word in WGSL, so the function is called `effect`.
