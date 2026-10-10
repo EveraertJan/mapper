@@ -105,6 +105,8 @@ pub struct DmxView {
     pub errors: Vec<String>,
     /// The cue last gone to, and how far its fade is (0..1) while one runs.
     pub current_cue: Option<CueId>,
+    /// Running chases: (step, 0..1 through it).
+    pub chases: HashMap<rustmap_core::ChaseId, (usize, f32)>,
     pub fade: Option<f32>,
 }
 
@@ -259,6 +261,8 @@ pub enum UiAction {
     StepCue(bool),
     /// Re-apply the current cue.
     CurrentCue,
+    /// Tap tempo for a chase.
+    TapChase(rustmap_core::ChaseId),
 }
 
 /// UI-only state that is not part of the show file.

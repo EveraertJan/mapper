@@ -7,7 +7,9 @@ use crate::fixture::{Fixture, FixtureId, FixtureShape, LedSettings};
 use crate::lights::{DmxFixture, DmxFixtureId, DmxType, DmxTypeId};
 use crate::media::{Media, MediaId, MediaSource};
 use crate::output::{OutputConfig, OutputId};
-use crate::playback::{Cue, CueId, CueScope, DmxGroup, DmxGroupId, MediaCue, SurfaceLook};
+use crate::playback::{
+    Chase, ChaseId, Cue, CueId, CueScope, DmxGroup, DmxGroupId, MediaCue, SurfaceLook,
+};
 use crate::surface::{Surface, SurfaceId};
 
 /// OSC remote control (cues, blackout, master) over UDP.
@@ -79,6 +81,8 @@ pub struct Project {
     pub dmx_groups: Vec<DmxGroup>,
     /// Stored looks, in playback order.
     pub cues: Vec<Cue>,
+    /// Cue sequences on a beat.
+    pub chases: Vec<Chase>,
     /// OSC remote control.
     pub osc: OscSettings,
     /// Sources of the custom shaders this show uses (filled in on save), so
@@ -94,6 +98,7 @@ pub struct Project {
     next_dmx_fixture_id: u32,
     next_dmx_group_id: u32,
     next_cue_id: u32,
+    next_chase_id: u32,
 }
 
 impl Default for Project {
@@ -110,6 +115,7 @@ impl Default for Project {
             dmx_fixtures: Vec::new(),
             dmx_groups: Vec::new(),
             cues: Vec::new(),
+            chases: Vec::new(),
             osc: OscSettings::default(),
             shader_sources: BTreeMap::new(),
             layout: Layout::default(),
@@ -121,6 +127,7 @@ impl Default for Project {
             next_dmx_fixture_id: 1,
             next_dmx_group_id: 1,
             next_cue_id: 1,
+            next_chase_id: 1,
         }
     }
 }
@@ -421,6 +428,36 @@ impl Project {
 
     pub fn remove_cue(&mut self, id: CueId) {
         self.cues.retain(|c| c.id != id);
+        for ch in &mut self.chases {
+            ch.steps.retain(|s| *s != id);
+        }
+    }
+
+    /// A new chase: every cue in list order, 120 BPM, half crossfade.
+    pub fn add_chase(&mut self) -> ChaseId {
+        let id = ChaseId(self.next_chase_id);
+        self.next_chase_id += 1;
+        self.chases.push(Chase {
+            id,
+            name: format!("Chase {}", id.0),
+            steps: self.cues.iter().map(|c| c.id).collect(),
+            bpm: 120.0,
+            crossfade: 0.5,
+            running: false,
+        });
+        id
+    }
+
+    pub fn remove_chase(&mut self, id: ChaseId) {
+        self.chases.retain(|c| c.id != id);
+    }
+
+    pub fn chase(&self, id: ChaseId) -> Option<&Chase> {
+        self.chases.iter().find(|c| c.id == id)
+    }
+
+    pub fn chase_mut(&mut self, id: ChaseId) -> Option<&mut Chase> {
+        self.chases.iter_mut().find(|c| c.id == id)
     }
 
     pub fn cue(&self, id: CueId) -> Option<&Cue> {

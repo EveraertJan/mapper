@@ -33,6 +33,9 @@ fn content(p: &Project) -> Project {
     c.shader_sources.clear();
     // Arranging the window isn't editing the show.
     c.layout = Default::default();
+    for ch in &mut c.chases {
+        ch.running = false;
+    }
     // Pause/play is operating the show, not editing it.
     for m in &mut c.media {
         if let crate::media::MediaSource::Video { playback, .. } = &mut m.source {
@@ -55,6 +58,9 @@ fn keep_live_state(restored: &mut Project, live: &Project) {
     restored.osc.listen = live.osc.listen;
     restored.shader_sources.clone_from(&live.shader_sources);
     restored.layout.clone_from(&live.layout);
+    for ch in &mut restored.chases {
+        ch.running = live.chase(ch.id).is_some_and(|l| l.running);
+    }
     for o in &mut restored.outputs {
         if let Some(l) = live.output(o.id) {
             o.enabled = l.enabled;

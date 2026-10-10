@@ -4,7 +4,8 @@
 use egui::{Color32, Pos2, Rect, Sense, Stroke};
 use rustmap_core::led::{LightId, conflicts_for};
 use rustmap_core::{
-    ChannelDef, ChannelKind, DmxFixture, DmxFixtureId, DmxType, DmxTypeId, Project, ValueRange,
+    ChannelDef, ChannelKind, CueId, DmxFixture, DmxFixtureId, DmxType, DmxTypeId, Project,
+    ValueRange,
 };
 
 use crate::{UiAction, UiState, ViewData};
@@ -829,24 +830,22 @@ fn cues(
         return;
     }
     osc_row(ui, project, view);
-    if !any {
-        ui.weak(
-            "No cues yet. Set up the lights, surfaces and videos the way you want, then Record.",
-        );
-        return;
-    }
-    egui::ScrollArea::vertical()
-        .id_salt("cue_list")
-        .auto_shrink(false)
-        .show(ui, |ui| {
-            let mut remove = None;
-            let mut update = None;
-            let ids: Vec<_> = project.cues.iter().map(|c| c.id).collect();
-            for (n, id) in ids.into_iter().enumerate() {
-                let Some(cue) = project.cue_mut(id) else {
-                    continue;
-                };
-                ui.horizontal(|ui| {
+    // The cue list, and the chases beside it when there is room (else below).
+    let list = |ui: &mut egui::Ui, project: &mut Project, actions: &mut Vec<UiAction>| {
+        if !any {
+            ui.weak(
+                "No cues yet. Set up the lights, surfaces and videos the way you want, then Record.",
+            );
+            return;
+        }
+        let mut remove = None;
+        let mut update = None;
+        let ids: Vec<_> = project.cues.iter().map(|c| c.id).collect();
+        for (n, id) in ids.into_iter().enumerate() {
+            let Some(cue) = project.cue_mut(id) else {
+                continue;
+            };
+            ui.horizontal(|ui| {
                     let live = current == Some(id);
                     ui.add_sized(
                         [22.0, 18.0],
@@ -907,14 +906,171 @@ fn cues(
                         remove = Some(id);
                     }
                 });
+        }
+        if let Some(id) = update {
+            project.update_cue(id);
+        }
+        if let Some(id) = remove {
+            project.remove_cue(id);
+        }
+    };
+    // A cue row needs about 720 points, a chase row about 560.
+    const CUE_W: f32 = 730.0;
+    if ui.available_width() >= CUE_W + 580.0 {
+        let h = ui.available_height();
+        ui.horizontal_top(|ui| {
+            let down = egui::Layout::top_down(egui::Align::Min);
+            ui.allocate_ui_with_layout(egui::vec2(CUE_W, h), down, |ui| {
+                egui::ScrollArea::vertical()
+                    .id_salt("cue_list")
+                    .auto_shrink(false)
+                    .show(ui, |ui| list(ui, project, actions));
+            });
+            ui.separator();
+            let rest = ui.available_width();
+            ui.allocate_ui_with_layout(egui::vec2(rest, h), down, |ui| {
+                egui::ScrollArea::vertical()
+                    .id_salt("chase_list")
+                    .auto_shrink(false)
+                    .show(ui, |ui| chases(ui, project, view, actions));
+            });
+        });
+    } else {
+        egui::ScrollArea::vertical()
+            .id_salt("cue_list")
+            .auto_shrink(false)
+            .show(ui, |ui| {
+                list(ui, project, actions);
+                ui.add_space(8.0);
+                chases(ui, project, view, actions);
+            });
+    }
+}
+
+/// Chases: cues played in a loop on a beat.
+fn chases(
+    ui: &mut egui::Ui,
+    project: &mut Project,
+    view: &ViewData<'_>,
+    actions: &mut Vec<UiAction>,
+) {
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("CHASES").strong());
+        if ui
+            .small_button("+ Chase")
+            .on_hover_text("A loop of cues on a beat (starts with every cue, in order)")
+            .clicked()
+        {
+            project.add_chase();
+        }
+    });
+    if project.chases.is_empty() {
+        ui.weak("A chase plays cues one after the other on a beat, looping.");
+        return;
+    }
+    let cue_number =
+        |project: &Project, id: CueId| project.cues.iter().position(|c| c.id == id).map(|n| n + 1);
+    let cues: Vec<(CueId, String)> = project
+        .cues
+        .iter()
+        .enumerate()
+        .map(|(n, c)| (c.id, format!("{} {}", n + 1, c.name)))
+        .collect();
+    let mut remove = None;
+    let ids: Vec<_> = project.chases.iter().map(|c| c.id).collect();
+    for (n, id) in ids.into_iter().enumerate() {
+        let numbers: Vec<Option<usize>> = project
+            .chase(id)
+            .map(|c| c.steps.iter().map(|s| cue_number(project, *s)).collect())
+            .unwrap_or_default();
+        let Some(chase) = project.chase_mut(id) else {
+            continue;
+        };
+        let position = view.dmx.chases.get(&id).copied();
+        ui.horizontal(|ui| {
+            ui.add_sized(
+                [22.0, 18.0],
+                egui::Label::new(egui::RichText::new(format!("{}", n + 1)).monospace()),
+            )
+            .on_hover_text(format!("OSC: /rustmap/chase/{}/run 1|0", n + 1));
+            let label = if chase.running { "Stop" } else { "Run" };
+            if ui
+                .add(egui::Button::new(label).fill(if chase.running {
+                    crate::SELECTION.gamma_multiply(0.5)
+                } else {
+                    Color32::TRANSPARENT
+                }))
+                .clicked()
+            {
+                chase.running = !chase.running;
             }
-            if let Some(id) = update {
-                project.update_cue(id);
+            ui.add(egui::TextEdit::singleline(&mut chase.name).desired_width(110.0));
+            ui.add(
+                egui::DragValue::new(&mut chase.bpm)
+                    .range(1.0..=600.0)
+                    .speed(0.5)
+                    .max_decimals(1)
+                    .suffix(" bpm"),
+            )
+            .on_hover_text("Steps per minute");
+            if ui
+                .button("Tap")
+                .on_hover_text("Tap the beat: the tempo follows your taps")
+                .clicked()
+            {
+                actions.push(UiAction::TapChase(id));
             }
-            if let Some(id) = remove {
-                project.remove_cue(id);
+            ui.add(
+                egui::Slider::new(&mut chase.crossfade, 0.0..=1.0)
+                    .show_value(false)
+                    .text("fade"),
+            )
+            .on_hover_text("How much of each step fades into it: left = cut, right = smooth");
+            ui.separator();
+            // Steps: cue numbers, the playing one highlighted; right-click removes.
+            let mut drop_step = None;
+            for (k, num) in numbers.iter().enumerate() {
+                let text = num.map_or("?".to_owned(), |n| n.to_string());
+                let playing = position.is_some_and(|(s, _)| s == k);
+                let r = ui
+                    .add(
+                        egui::Button::new(egui::RichText::new(text).monospace())
+                            .small()
+                            .fill(if playing {
+                                crate::SELECTION.gamma_multiply(0.6)
+                            } else {
+                                Color32::from_gray(45)
+                            }),
+                    )
+                    .on_hover_text("Right-click: remove this step");
+                if r.secondary_clicked() {
+                    drop_step = Some(k);
+                }
+            }
+            if let Some(k) = drop_step {
+                chase.steps.remove(k);
+            }
+            ui.menu_button("+", |ui| {
+                for (cue, label) in &cues {
+                    if ui.button(label).clicked() {
+                        chase.steps.push(*cue);
+                        ui.close();
+                    }
+                }
+                if cues.is_empty() {
+                    ui.weak("No cues yet");
+                }
+            })
+            .response
+            .on_hover_text("Add a step");
+            if ui.small_button("🗑").on_hover_text("Delete chase").clicked() {
+                remove = Some(id);
             }
         });
+    }
+    if let Some(id) = remove {
+        project.remove_chase(id);
+    }
 }
 
 // ---- groups ----
@@ -1024,6 +1180,8 @@ const OSC_HELP: &str = "\
 /rustmap/cue/next   (or /rustmap/go)
 /rustmap/cue/back
 /rustmap/cue/current
+/rustmap/chase/<number>/run [1|0]   (no argument: toggle)
+/rustmap/chase/<number>/tap
 /rustmap/blackout [0|1]   (no argument: toggle)
 /rustmap/master <0..1>
 

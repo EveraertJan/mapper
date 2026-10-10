@@ -26,8 +26,8 @@ pub use lights::{
 pub use media::{Media, MediaId, MediaSource, Playback};
 pub use output::{EdgeBlend, OutputConfig, OutputId, TestPattern};
 pub use playback::{
-    Cue, CueId, CuePlayer, CueScope, DmxGroup, DmxGroupId, GroupControl, MediaCue, SurfaceLook,
-    group_controls,
+    Chase, ChaseId, Cue, CueId, CuePlayer, CueScope, DmxGroup, DmxGroupId, GroupControl, MediaCue,
+    SurfaceLook, group_controls,
 };
 pub use project::{Layout, OscSettings, Project};
 pub use shaders::{FilterUse, ParamDef, ShaderInfo};

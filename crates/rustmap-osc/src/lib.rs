@@ -13,6 +13,8 @@
 //! | `/rustmap/cue/next`, `/rustmap/go` | none, or 1 | next cue |
 //! | `/rustmap/cue/back`, `/rustmap/cue/prev` | none, or 1 | previous cue |
 //! | `/rustmap/cue/current` | none, or 1 | re-apply the current cue |
+//! | `/rustmap/chase/<n>/run` | 1 / 0, none toggles | start / stop chase n |
+//! | `/rustmap/chase/<n>/tap` | none, or 1 | tap tempo for chase n |
 //! | `/rustmap/blackout` | 0 / 1 (none: toggle) | blackout off / on |
 //! | `/rustmap/master` | 0..1 | grand master |
 //!
@@ -50,6 +52,10 @@ pub enum Command {
     Back,
     /// Re-apply the current cue.
     Current,
+    /// Start (true), stop (false) or toggle (None) chase `n` (1-based).
+    ChaseRun(usize, Option<bool>),
+    /// Tap tempo for chase `n`.
+    ChaseTap(usize),
     /// `None`: toggle.
     Blackout(Option<bool>),
     Master(f32),
@@ -109,6 +115,16 @@ pub fn parse(msg: &OscMessage) -> Option<Command> {
             Some(Command::Back)
         }
         ["cue", "current"] | ["cue", "again"] if pressed(args) => Some(Command::Current),
+        ["chase", n, "run"] => {
+            let n: usize = n.parse().ok().filter(|n| *n >= 1)?;
+            Some(Command::ChaseRun(
+                n,
+                args.first().and_then(number).map(|v| v != 0.0),
+            ))
+        }
+        ["chase", n, "tap"] if pressed(args) => {
+            Some(Command::ChaseTap(n.parse().ok().filter(|n| *n >= 1)?))
+        }
         ["blackout"] => Some(Command::Blackout(
             args.first().and_then(number).map(|v| v != 0.0),
         )),
@@ -273,6 +289,23 @@ mod tests {
         assert_eq!(parse(&msg("/rustmap/cue/prev", vec![])), Some(Back));
         assert_eq!(parse(&msg("/rustmap/cue/back", vec![])), Some(Back));
         assert_eq!(parse(&msg("/rustmap/cue/current", vec![])), Some(Current));
+        assert_eq!(
+            parse(&msg("/rustmap/chase/2/run", vec![OscType::Int(1)])),
+            Some(ChaseRun(2, Some(true)))
+        );
+        assert_eq!(
+            parse(&msg("/rustmap/chase/1/run", vec![])),
+            Some(ChaseRun(1, None))
+        );
+        assert_eq!(
+            parse(&msg("/rustmap/chase/1/tap", vec![])),
+            Some(ChaseTap(1))
+        );
+        assert_eq!(
+            parse(&msg("/rustmap/chase/1/tap", vec![OscType::Int(0)])),
+            None
+        );
+        assert_eq!(parse(&msg("/rustmap/chase/0/run", vec![])), None);
     }
 
     #[test]

@@ -24,6 +24,32 @@ use crate::surface::{BlendMode, ColorAdjust, Mask, Mesh, Shape, Surface, Surface
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct DmxGroupId(pub u32);
 
+/// Stable identifier of a chase.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct ChaseId(pub u32);
+
+/// Cues played one after the other on a beat, looping.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Chase {
+    pub id: ChaseId,
+    pub name: String,
+    pub steps: Vec<CueId>,
+    /// Steps per minute.
+    pub bpm: f32,
+    /// Part of each step spent fading into it (0 = cut, 1 = fade all the way).
+    pub crossfade: f32,
+    /// Playing. Saved (a production file starts it), but not an edit.
+    #[serde(default)]
+    pub running: bool,
+}
+
+impl Chase {
+    /// Length of one step.
+    pub fn step_seconds(&self) -> f64 {
+        60.0 / f64::from(self.bpm.clamp(1.0, 600.0))
+    }
+}
+
 /// Stable identifier of a cue.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct CueId(pub u32);
@@ -328,21 +354,47 @@ struct SurfaceFade {
     hide_with: Option<f32>,
 }
 
-struct Fade {
+/// When a fade started and how long it takes.
+#[derive(Clone, Copy)]
+struct Timing {
     start: f64,
     duration: f64,
-    /// Per fixture: (channel, from, to, value last written) for every
-    /// channel still fading.
-    channels: HashMap<DmxFixtureId, Vec<(usize, u16, u16, u16)>>,
-    surfaces: HashMap<SurfaceId, SurfaceFade>,
 }
 
-/// Runs cue changes. Lives in the app, not in the show file or undo history.
+impl Timing {
+    fn at(self, now: f64) -> f32 {
+        if self.duration <= 0.0 {
+            return 1.0;
+        }
+        (((now - self.start) / self.duration) as f32).clamp(0.0, 1.0)
+    }
+}
+
+/// (channel, from, to, value last written) for every channel still fading.
+type ChannelFades = Vec<(usize, u16, u16, u16)>;
+
+/// A running chase's clock.
+struct ChaseClock {
+    /// When step 0 began.
+    start: f64,
+    /// Step last gone to.
+    step: Option<usize>,
+}
+
+/// Runs cue changes and chases. Lives in the app, not in the show file or
+/// undo history. Fades are kept per fixture and per surface, so a chase and
+/// a manual cue on different lights run side by side.
 #[derive(Default)]
 pub struct CuePlayer {
-    /// The cue last gone to.
+    /// The cue last gone to from the cue list (chases don't change it).
     pub current: Option<CueId>,
-    fade: Option<Fade>,
+    fixtures: HashMap<DmxFixtureId, (Timing, ChannelFades)>,
+    surfaces: HashMap<SurfaceId, (Timing, SurfaceFade)>,
+    /// The last fade started from the cue list, for its progress bar.
+    last: Option<Timing>,
+    chases: HashMap<ChaseId, ChaseClock>,
+    /// Recent taps per chase, for tap tempo.
+    taps: HashMap<ChaseId, Vec<f64>>,
     /// Videos to rewind, for the app to pick up ([`Self::take_restarts`]).
     restarts: Vec<MediaId>,
 }
@@ -352,11 +404,23 @@ impl CuePlayer {
     /// colors, opacity, surface color, geometry) fade from where they are
     /// now, also mid-fade; everything else switches at once.
     pub fn go(&mut self, project: &mut Project, cue: CueId, now: f64) {
+        if self.apply(project, cue, now, None) {
+            self.current = Some(cue);
+        }
+    }
+
+    /// Applies a cue with its own fade time, or `fade` instead (chases).
+    /// Returns false if there is no such cue.
+    fn apply(&mut self, project: &mut Project, cue: CueId, now: f64, fade: Option<f32>) -> bool {
         let Some(c) = project.cue(cue).cloned() else {
-            return;
+            return false;
         };
-        self.fade = None;
-        let fading = c.fade > 0.0;
+        let fade_time = fade.unwrap_or(c.fade);
+        let timing = Timing {
+            start: now,
+            duration: f64::from(fade_time),
+        };
+        let fading = fade_time > 0.0;
         let mut channels = HashMap::new();
         if c.scope.lights {
             for (id, values) in &c.values {
@@ -485,15 +549,28 @@ impl CuePlayer {
             }
         }
 
-        self.current = Some(cue);
-        if !channels.is_empty() || !surfaces.is_empty() {
-            self.fade = Some(Fade {
-                start: now,
-                duration: f64::from(c.fade),
-                channels,
-                surfaces,
-            });
+        // This cue's lights and surfaces start from where they are now:
+        // their earlier fades end here.
+        if c.scope.lights {
+            for id in c.values.keys() {
+                self.fixtures.remove(id);
+            }
         }
+        if c.scope.surfaces || c.scope.geometry {
+            for id in c.surfaces.keys() {
+                self.surfaces.remove(id);
+            }
+        }
+        for (id, list) in channels {
+            self.fixtures.insert(id, (timing, list));
+        }
+        for (id, f) in surfaces {
+            self.surfaces.insert(id, (timing, f));
+        }
+        if fade.is_none() {
+            self.last = Some(timing);
+        }
+        true
     }
 
     /// Re-applies the current cue (after things were moved away from it).
@@ -527,37 +604,111 @@ impl CuePlayer {
         std::mem::take(&mut self.restarts)
     }
 
-    /// Stops a running fade where it is (undo, opening another show).
+    /// Stops running fades where they are (undo, opening another show).
     pub fn stop(&mut self) {
-        self.fade = None;
+        self.fixtures.clear();
+        self.surfaces.clear();
+        self.last = None;
     }
 
-    /// Forgets the current cue too.
+    /// Forgets the current cue and chase clocks too.
     pub fn reset(&mut self) {
-        self.fade = None;
+        self.stop();
         self.current = None;
+        self.chases.clear();
+        self.taps.clear();
         self.restarts.clear();
     }
 
     /// Whether a fade is running.
     pub fn fading(&self) -> bool {
-        self.fade.is_some()
+        !self.fixtures.is_empty() || !self.surfaces.is_empty()
     }
 
-    /// 0..1 while a fade runs.
+    /// Fading or a chase running: the show changes by itself every frame,
+    /// so undo waits (one step when it settles).
+    pub fn busy(&self) -> bool {
+        self.fading() || !self.chases.is_empty()
+    }
+
+    /// 0..1 while the last cue-list fade runs.
     pub fn fade_progress(&self, now: f64) -> Option<f32> {
-        let f = self.fade.as_ref()?;
-        Some((((now - f.start) / f.duration) as f32).clamp(0.0, 1.0))
+        let t = self.last?;
+        (t.duration > 0.0 && now - t.start < t.duration && self.fading()).then(|| t.at(now))
+    }
+
+    // ---- chases ----
+
+    /// Steps running chases (going to their cues with the chase's
+    /// crossfade) and forgets the clocks of stopped ones. Call once per
+    /// frame, before [`Self::tick`].
+    pub fn run_chases(&mut self, project: &mut Project, now: f64) {
+        let running: Vec<Chase> = project
+            .chases
+            .iter()
+            .filter(|c| c.running && !c.steps.is_empty())
+            .cloned()
+            .collect();
+        self.chases
+            .retain(|id, _| running.iter().any(|c| c.id == *id));
+        for chase in running {
+            let clock = self.chases.entry(chase.id).or_insert(ChaseClock {
+                start: now,
+                step: None,
+            });
+            let len = chase.step_seconds();
+            let step = (((now - clock.start) / len).floor().max(0.0) as usize) % chase.steps.len();
+            if clock.step != Some(step) {
+                clock.step = Some(step);
+                let fade = (chase.crossfade.clamp(0.0, 1.0) as f64 * len) as f32;
+                self.apply(project, chase.steps[step], now, Some(fade));
+            }
+        }
+    }
+
+    /// Where a running chase is: (step, 0..1 through it).
+    pub fn chase_position(&self, chase: &Chase, now: f64) -> Option<(usize, f32)> {
+        let clock = self.chases.get(&chase.id)?;
+        if chase.steps.is_empty() {
+            return None;
+        }
+        let pos = ((now - clock.start) / chase.step_seconds()).max(0.0);
+        Some((pos as usize % chase.steps.len(), pos.fract() as f32))
+    }
+
+    /// Tap tempo: the chase's BPM follows the last few taps (a pause of more
+    /// than two seconds starts over), and the step in progress restarts on
+    /// the tap.
+    pub fn tap(&mut self, project: &mut Project, chase: ChaseId, now: f64) {
+        let taps = self.taps.entry(chase).or_default();
+        if taps.last().is_some_and(|t| now - t > 2.0) {
+            taps.clear();
+        }
+        taps.push(now);
+        if taps.len() > 8 {
+            taps.remove(0);
+        }
+        if taps.len() >= 2 {
+            let interval = (taps[taps.len() - 1] - taps[0]) / (taps.len() - 1) as f64;
+            if let Some(c) = project.chase_mut(chase)
+                && interval > 0.0
+            {
+                c.bpm = (60.0 / interval).clamp(1.0, 600.0) as f32;
+            }
+        }
+        // Re-phase: the current step starts on the tap.
+        if let (Some(clock), Some(c)) = (self.chases.get_mut(&chase), project.chase(chase)) {
+            let len = c.step_seconds();
+            let step = clock.step.unwrap_or(0) as f64;
+            clock.start = now - step * len;
+        }
     }
 
     /// Moves fading values to where they should be at `now`. Call once per
     /// frame.
     pub fn tick(&mut self, project: &mut Project, now: f64) {
-        let Some(fade) = &mut self.fade else {
-            return;
-        };
-        let t = (((now - fade.start) / fade.duration) as f32).clamp(0.0, 1.0);
-        fade.channels.retain(|id, chans| {
+        self.fixtures.retain(|id, (timing, chans)| {
+            let t = timing.at(now);
             let Some(f) = project.dmx_fixture_mut(*id) else {
                 return false;
             };
@@ -575,7 +726,8 @@ impl CuePlayer {
             });
             !chans.is_empty()
         });
-        fade.surfaces.retain(|id, f| {
+        self.surfaces.retain(|id, (timing, f)| {
+            let t = timing.at(now);
             let Some(s) = project.surface_mut(*id) else {
                 return false;
             };
@@ -599,9 +751,6 @@ impl CuePlayer {
             }
             false
         });
-        if t >= 1.0 || (fade.channels.is_empty() && fade.surfaces.is_empty()) {
-            self.fade = None;
-        }
     }
 }
 
@@ -974,5 +1123,99 @@ mod tests {
         assert_eq!(c.surfaces[&s].media, None);
         p.remove_surface(s);
         assert!(p.cue(cue).unwrap().surfaces.is_empty());
+    }
+
+    /// Two cues on the first par's dimmer: 0 and 255.
+    fn two_looks() -> (Project, DmxFixtureId, CueId, CueId) {
+        let (mut p, ids) = rig();
+        let a = ids[0];
+        p.dmx_fixture_mut(a).unwrap().values[0] = 0;
+        let dark = p.record_cue(Some(&[a]));
+        p.dmx_fixture_mut(a).unwrap().values[0] = 255;
+        let full = p.record_cue(Some(&[a]));
+        p.dmx_fixture_mut(a).unwrap().values[0] = 0;
+        (p, a, dark, full)
+    }
+
+    #[test]
+    fn chase_steps_on_the_beat_with_its_crossfade() {
+        let (mut p, a, dark, full) = two_looks();
+        let ch = p.add_chase();
+        assert_eq!(p.chase(ch).unwrap().steps, vec![dark, full]);
+        {
+            let c = p.chase_mut(ch).unwrap();
+            c.bpm = 60.0; // one step per second
+            c.crossfade = 0.5;
+            c.running = true;
+        }
+        let mut player = CuePlayer::default();
+        let dim = |p: &Project| p.dmx_fixture(a).unwrap().values[0];
+        player.run_chases(&mut p, 10.0); // step 0: dark
+        player.tick(&mut p, 10.0);
+        assert_eq!(dim(&p), 0);
+        player.run_chases(&mut p, 11.0); // step 1: full, fading over 0.5 s
+        player.tick(&mut p, 11.25);
+        assert_eq!(dim(&p), 128);
+        player.run_chases(&mut p, 11.6);
+        player.tick(&mut p, 11.6);
+        assert_eq!(dim(&p), 255);
+        let pos = player.chase_position(p.chase(ch).unwrap(), 11.6).unwrap();
+        assert_eq!(pos.0, 1);
+        player.run_chases(&mut p, 12.0); // loops back to dark
+        player.tick(&mut p, 12.5);
+        assert_eq!(dim(&p), 0);
+        // The cue list's current cue is left alone.
+        assert_eq!(player.current, None);
+        // Stopped: the clock goes away.
+        p.chase_mut(ch).unwrap().running = false;
+        player.run_chases(&mut p, 13.0);
+        assert!(player.chase_position(p.chase(ch).unwrap(), 13.0).is_none());
+    }
+
+    #[test]
+    fn tap_tempo_sets_bpm() {
+        let (mut p, ..) = two_looks();
+        let ch = p.add_chase();
+        let mut player = CuePlayer::default();
+        for t in [0.0, 0.5, 1.0, 1.5] {
+            player.tap(&mut p, ch, t);
+        }
+        assert!((p.chase(ch).unwrap().bpm - 120.0).abs() < 0.01);
+        // After a long pause, taps start over.
+        player.tap(&mut p, ch, 10.0);
+        player.tap(&mut p, ch, 11.0);
+        assert!((p.chase(ch).unwrap().bpm - 60.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn a_chase_and_a_manual_cue_fade_side_by_side() {
+        let (mut p, ids) = rig();
+        let (a, b) = (ids[0], ids[1]);
+        p.dmx_fixture_mut(a).unwrap().values[0] = 255;
+        let a_full = p.record_cue(Some(&[a]));
+        p.dmx_fixture_mut(b).unwrap().values[0] = 255;
+        let b_full = p.record_cue(Some(&[b]));
+        p.cue_mut(a_full).unwrap().fade = 2.0;
+        p.cue_mut(b_full).unwrap().fade = 2.0;
+        p.dmx_fixture_mut(a).unwrap().values[0] = 0;
+        p.dmx_fixture_mut(b).unwrap().values[0] = 0;
+        let mut player = CuePlayer::default();
+        player.go(&mut p, a_full, 0.0);
+        player.go(&mut p, b_full, 1.0); // must not cancel a's fade
+        player.tick(&mut p, 1.0);
+        assert_eq!(p.dmx_fixture(a).unwrap().values[0], 128);
+        assert_eq!(p.dmx_fixture(b).unwrap().values[0], 0);
+        player.tick(&mut p, 3.0);
+        assert_eq!(p.dmx_fixture(a).unwrap().values[0], 255);
+        assert_eq!(p.dmx_fixture(b).unwrap().values[0], 255);
+        assert!(!player.fading());
+    }
+
+    #[test]
+    fn removing_a_cue_removes_its_chase_steps() {
+        let (mut p, _, dark, full) = two_looks();
+        let ch = p.add_chase();
+        p.remove_cue(dark);
+        assert_eq!(p.chase(ch).unwrap().steps, vec![full]);
     }
 }

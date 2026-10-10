@@ -471,6 +471,10 @@ impl App {
                 let now = self.start.elapsed().as_secs_f64();
                 self.led.go(&mut self.project, id, now);
             }
+            UiAction::TapChase(id) => {
+                let now = self.start.elapsed().as_secs_f64();
+                self.led.tap(&mut self.project, id, now);
+            }
             UiAction::CurrentCue => {
                 let now = self.start.elapsed().as_secs_f64();
                 self.led.again(&mut self.project, now);

@@ -130,6 +130,10 @@ A cue is a stored look of the whole show: DMX fixture values, every surface (vis
 - Per cue, toggles choose what it applies: **Lights**, **Surfaces** (visibility, opacity, color, blend, media), **Geometry** (off by default, so a cue never undoes a calibration; on, the mapping morphs during the fade) and **Media** (play / pause), with **Restart** to rewind its videos.
 - Fades move the real values, so faders, inspectors and the outputs show what is happening. Fading: dimmer, colors, pan, tilt, zoom, focus, surface opacity (showing and hiding fade through it), surface color and geometry. Switching at the start: media, blend mode, shape, wheels, gobos, strobe. Geometry with a different mesh size or mask point count switches at once. Touch a fader or a surface mid-fade and it stays where you put it. A whole fade is one undo step.
 
+### Chases
+
+Under the cue list, **+ Chase** makes a loop of cues on a beat (it starts with every cue, in order). Per chase: **Run / Stop**, a name, the tempo in BPM, **Tap** (tap the beat; the tempo follows the last few taps and the current step restarts on the tap), **fade** (how much of each step fades into it, from a hard cut to a fade over the whole step), and its steps as cue numbers: the playing one lights up, **+** adds a step, right-click removes one. A chase plays its cues with their scopes (a lights-only cue only touches the lights), so a chase and the cue list can run at the same time on different things. Running is saved with the show (a production file starts it). While a chase runs, undo steps wait until it stops.
+
 ### OSC remote
 
 Tick **OSC** in the Cues panel (port 8000 by default) and send from TouchOSC, QLab, Bitfocus Companion, a lighting desk or anything else that speaks OSC over UDP:
@@ -141,6 +145,8 @@ Tick **OSC** in the Cues panel (port 8000 by default) and send from TouchOSC, QL
 | `/rustmap/cue/next` or `/rustmap/go` | none, or 1 | next cue |
 | `/rustmap/cue/back` | none, or 1 | previous cue |
 | `/rustmap/cue/current` | none, or 1 | apply the current cue again |
+| `/rustmap/chase/<n>/run` | 1 / 0, none toggles | start / stop chase *n* |
+| `/rustmap/chase/<n>/tap` | none, or 1 | tap tempo for chase *n* |
 | `/rustmap/blackout` | 0 / 1, none toggles | blackout |
 | `/rustmap/master` | 0..1 | grand master |
 

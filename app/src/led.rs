@@ -77,15 +77,22 @@ impl LedOutput {
         self.player.reset();
     }
 
-    /// While a fade runs the fixtures change every frame; undo should wait.
+    /// While a fade or a chase runs the show changes every frame; undo
+    /// should wait.
     pub fn fading(&self) -> bool {
-        self.player.fading()
+        self.player.busy()
+    }
+
+    /// Tap tempo for a chase.
+    pub fn tap(&mut self, project: &mut Project, chase: rustmap_core::ChaseId, now: f64) {
+        self.player.tap(project, chase, now);
     }
 
     /// Builds the universes, refreshes the monitor, and sends when due.
     pub fn update(&mut self, project: &mut Project, now: f64, dt: f64) {
         puffin::profile_function!();
         self.colors.retain(|id, _| project.fixture(*id).is_some());
+        self.player.run_chases(project, now);
         self.player.tick(project, now);
         let project: &Project = project;
         let universes = build_universes(project, &self.colors);
@@ -164,6 +171,11 @@ impl LedOutput {
             frames: stats.frames,
             errors,
             current_cue: self.player.current,
+            chases: project
+                .chases
+                .iter()
+                .filter_map(|c| Some((c.id, self.player.chase_position(c, now)?)))
+                .collect(),
             fade: self.player.fade_progress(now),
         };
     }

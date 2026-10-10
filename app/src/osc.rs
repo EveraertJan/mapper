@@ -89,6 +89,24 @@ fn apply(c: &Command, project: &mut Project, led: &mut LedOutput, now: f64) -> S
             led.again(project, now);
             "Current".to_owned()
         }
+        Command::ChaseRun(n, on) => match project.chases.get_mut(n - 1) {
+            Some(c) => {
+                c.running = on.unwrap_or(!c.running);
+                format!(
+                    "{} {}",
+                    c.name,
+                    if c.running { "running" } else { "stopped" }
+                )
+            }
+            None => "no such chase".to_owned(),
+        },
+        Command::ChaseTap(n) => match project.chases.get(n - 1).map(|c| c.id) {
+            Some(id) => {
+                led.tap(project, id, now);
+                "Tap".to_owned()
+            }
+            None => "no such chase".to_owned(),
+        },
         Command::Blackout(on) => {
             let on = on.unwrap_or(!project.led.blackout);
             project.led.blackout = on;

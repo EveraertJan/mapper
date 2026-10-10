@@ -276,6 +276,8 @@ mod tests {
         let g = p.add_dmx_group();
         p.dmx_group_mut(g).unwrap().fixtures = vec![f];
         let cue = p.record_cue(None);
+        let ch = p.add_chase();
+        p.chase_mut(ch).unwrap().running = true;
         p.cue_mut(cue).unwrap().fade = 1.5;
         p
     }
