@@ -134,7 +134,11 @@ pub(crate) fn show(
         state.drag = match hit(project, p) {
             Some(Hit::Corner(surface, corner)) => {
                 state.selected_corner = Some(corner);
-                Some(Drag::InputCorner { surface, corner })
+                project.surface(surface).map(|s| Drag::InputCorner {
+                    surface,
+                    corner,
+                    start: s.input,
+                })
             }
             Some(Hit::Inside(surface)) => {
                 select(state, project, surface);
@@ -153,14 +157,31 @@ pub(crate) fn show(
     {
         let p = to_norm(pos);
         match state.drag.clone() {
-            Some(Drag::InputCorner { surface, corner }) => {
+            Some(Drag::InputCorner {
+                surface,
+                corner,
+                start,
+            }) => {
                 let target = if state.snapping && !alt {
                     snap_point(p, &SnapTargets::output_frame(), scale, SNAP_RADIUS)
                 } else {
                     p
                 };
+                let shift = ui.input(|i| i.modifiers.shift);
                 if let Some(s) = project.surface_mut(surface) {
-                    s.input[corner] = target.to_array();
+                    if shift {
+                        // Shift: this corner on its own.
+                        s.input[corner] = target.to_array();
+                        state.drag = Some(Drag::InputCorner {
+                            surface,
+                            corner,
+                            start: s.input,
+                        });
+                    } else {
+                        // Plain drag: the whole region scales about its
+                        // center, keeping its shape.
+                        s.input = scale_about_center(start, corner, target.to_array());
+                    }
                 }
             }
             Some(Drag::InputMove {
@@ -363,7 +384,7 @@ pub(crate) fn show(
         Pos2::new(avail.min.x + 8.0, avail.max.y - 6.0),
         egui::Align2::LEFT_BOTTOM,
         format!(
-            "{} × {} px · click a region to select it · drag corners or the region · Arrows: 1 px (Shift 10) · pinch or {}+scroll: zoom · Space+drag: pan",
+            "{} × {} px · click a region to select it · drag a corner: scale about the center (Shift: just that corner) · drag inside: move · Arrows: 1 px (Shift 10) · pinch or {}+scroll: zoom · Space+drag: pan",
             size[0],
             size[1],
             if cfg!(target_os = "macos") { "Cmd" } else { "Ctrl" }
@@ -430,8 +451,48 @@ fn header(ui: &mut egui::Ui, project: &mut Project, state: &mut UiState, media: 
     ui.separator();
 }
 
+/// `start` scaled uniformly about its center so that `corner` follows
+/// `target` along its diagonal (the shape and proportions stay the same).
+fn scale_about_center(start: [[f32; 2]; 4], corner: usize, target: [f32; 2]) -> [[f32; 2]; 4] {
+    let c = start
+        .iter()
+        .fold([0.0, 0.0], |a, p| [a[0] + p[0] / 4.0, a[1] + p[1] / 4.0]);
+    let d = [start[corner][0] - c[0], start[corner][1] - c[1]];
+    let len2 = d[0] * d[0] + d[1] * d[1];
+    if len2 < 1e-12 {
+        return start;
+    }
+    let t = [target[0] - c[0], target[1] - c[1]];
+    let factor = ((t[0] * d[0] + t[1] * d[1]) / len2).max(0.02);
+    start.map(|p| [c[0] + (p[0] - c[0]) * factor, c[1] + (p[1] - c[1]) * factor])
+}
+
 fn centered(ui: &mut egui::Ui, text: &str) {
     ui.centered_and_justified(|ui| {
         ui.weak(text);
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn corner_drag_scales_about_the_center() {
+        let start = [[0.2, 0.2], [0.6, 0.2], [0.6, 0.4], [0.2, 0.4]];
+        // Pull the bottom-right corner out along its diagonal: twice as big.
+        let q = scale_about_center(start, 2, [0.8, 0.5]);
+        let close =
+            |a: [f32; 2], b: [f32; 2]| (a[0] - b[0]).abs() < 1e-5 && (a[1] - b[1]).abs() < 1e-5;
+        assert!(close(q[0], [0.0, 0.1]));
+        assert!(close(q[2], [0.8, 0.5]));
+        // Off the diagonal: projected onto it, so the shape never skews.
+        let q = scale_about_center(start, 2, [0.8, 0.3]);
+        let w = q[1][0] - q[0][0];
+        let h = q[3][1] - q[0][1];
+        assert!((w / h - 2.0).abs() < 1e-4);
+        // Never collapses or flips.
+        let q = scale_about_center(start, 2, [0.0, 0.0]);
+        assert!(q[2][0] > q[0][0]);
+    }
 }

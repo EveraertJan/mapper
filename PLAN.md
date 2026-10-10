@@ -198,9 +198,11 @@ Moved ahead of video (2026-10-08).
 - Not done: chases (cue sequences on a BPM clock), GDTF / Open Fixture Library import, follow-image (a fixture's color from a point of the output), OSC feedback (sending the current cue back to the controller), OSC for group faders, MIDI.
 
 ### UI: chronological columns (branch `chronological`, 2026-10-10)
-- The control window follows the signal left to right: **1 Inputs** (media) · **2 Input mapping** (the selected input with every surface's region on it, + Region, Use for, Full frame) · **3 Outputs** (projectors with their surfaces and LED fixtures, DMX fixtures, and the selected item's settings) · **4 Output mapping** (output canvas with the surface settings below it, or Console / DMX monitor). Cues run along the bottom under all columns.
+- The control window follows the signal left to right: **1 Inputs** (media) · **2 Input mapping** (the selected input with every surface's region on it, + Region, Use for, Full frame) · **3 Filters** (collapsed by default: video transport, surface color) · **4 Outputs** (projectors with their surfaces and LED fixtures, DMX fixtures, and the selected item's settings) · **5 Output mapping** (output canvas with the surface settings below it, or Console / DMX monitor). Each column has a vertical title strip on its left edge. Cues run along the bottom under all columns. Zoom/pan on both canvases (pinch, Cmd+scroll, Space/middle drag, Fit).
 - The old Input tab and right-hand inspector are gone; arrow keys nudge in the column last clicked.
-- Still to try: DMX / LED fixtures that take their color from a region of an input (the follow-image idea fits column 2), dragging an input onto an output, a narrower layout for small screens.
+- Filters column: user WGSL shader filters (`fn effect(color, uv, src_uv)`, helpers `rm_time`, `rm_param`, `rm_sample`, `rm_size`; validated with naga so a broken file shows an error with its own line number instead of crashing; hot reload on save; examples in `assets/shaders`, bundled in the release packages), color, posterize (bits per channel). Shader and posterize are stored in cues and switch at the start of a fade.
+- Input mapping: dragging a corner scales the region about its center (Shift: one corner).
+- Still to try: ISF / GLSL shader import, blur, levels, keying, filter chains, effects per input rather than per surface, DMX / LED fixtures that take their color from a region of an input (the follow-image idea fits column 2), dragging an input onto an output, a narrower layout for small screens.
 
 ### M6D — Phone fine-tuning (planned)
 Fine-tune a mapping from up close, with a phone, standing at the projection surface instead of at the computer.

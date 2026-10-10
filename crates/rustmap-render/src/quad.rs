@@ -22,14 +22,16 @@ struct Uniforms {
     contrast: f32,
     saturation: f32,
     hue: f32,
-    _pad: [f32; 2],
+    posterize: f32,
+    time: f32,
     gain: [f32; 4],
+    params: [f32; 4],
     input: [[f32; 4]; 3],
     /// Two mask points per vec4.
     mask: [[f32; 4]; MASK_MAX_POINTS / 2],
 }
 
-const _: () = assert!(std::mem::size_of::<Uniforms>() == 112 + 16 * MASK_MAX_POINTS / 2);
+const _: () = assert!(std::mem::size_of::<Uniforms>() == 128 + 16 * MASK_MAX_POINTS / 2);
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
@@ -77,6 +79,17 @@ pub struct QuadDraw<'a> {
     pub input: Quad,
     pub mask: Option<&'a Mask>,
     pub color: ColorAdjust,
+    /// A compiled shader filter, or `None` for the plain pipeline.
+    pub filter: Option<&'a FilterPipelines>,
+    /// The filter's four knobs.
+    pub params: [f32; 4],
+    /// Seconds, for animated filters.
+    pub time: f32,
+}
+
+/// Pipelines for one shader filter (one per blend mode).
+pub struct FilterPipelines {
+    pipelines: [wgpu::RenderPipeline; 4],
 }
 
 impl<'a> QuadDraw<'a> {
@@ -98,6 +111,9 @@ impl<'a> QuadDraw<'a> {
             ],
             mask: None,
             color: ColorAdjust::default(),
+            filter: None,
+            params: [0.0; 4],
+            time: 0.0,
         }
     }
 }
@@ -105,6 +121,7 @@ impl<'a> QuadDraw<'a> {
 /// Draws perspective-correct or mesh-warped textured surfaces.
 pub struct QuadRenderer {
     pipelines: [wgpu::RenderPipeline; 4],
+    pipeline_layout: wgpu::PipelineLayout,
     uniform_layout: wgpu::BindGroupLayout,
     image_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
@@ -154,38 +171,7 @@ impl QuadRenderer {
             bind_group_layouts: &[Some(&uniform_layout), Some(&image_layout)],
             immediate_size: 0,
         });
-        let make = |blend: wgpu::BlendState| {
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("quad"),
-                layout: Some(&pipeline_layout),
-                vertex: wgpu::VertexState {
-                    module: &shader,
-                    entry_point: Some("vs_main"),
-                    compilation_options: Default::default(),
-                    buffers: &[Some(wgpu::VertexBufferLayout {
-                        array_stride: std::mem::size_of::<Vertex>() as u64,
-                        step_mode: wgpu::VertexStepMode::Vertex,
-                        attributes: &wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x2],
-                    })],
-                },
-                primitive: wgpu::PrimitiveState::default(),
-                depth_stencil: None,
-                multisample: wgpu::MultisampleState::default(),
-                fragment: Some(wgpu::FragmentState {
-                    module: &shader,
-                    entry_point: Some("fs_main"),
-                    compilation_options: Default::default(),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format: OUTPUT_FORMAT,
-                        blend: Some(blend),
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
-                }),
-                multiview_mask: None,
-                cache: None,
-            })
-        };
-        let pipelines = BlendMode::ALL.map(|mode| make(blend_state(mode)));
+        let pipelines = make_pipelines(device, &pipeline_layout, &shader);
         // Steep keystone angles squash the image along one axis; anisotropic
         // filtering keeps it sharp along the other.
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -216,6 +202,7 @@ impl QuadRenderer {
 
         Self {
             pipelines,
+            pipeline_layout,
             uniform_layout,
             image_layout,
             sampler,
@@ -242,6 +229,28 @@ impl QuadRenderer {
                     resource: wgpu::BindingResource::Sampler(sampler),
                 },
             ],
+        })
+    }
+
+    /// Compiles a shader filter: WGSL defining
+    /// `fn effect(color: vec4<f32>, uv: vec2<f32>, src_uv: vec2<f32>) -> vec4<f32>`.
+    /// Errors (with line numbers in the filter's own file) instead of panics.
+    pub fn compile_filter(
+        &self,
+        device: &wgpu::Device,
+        filter_source: &str,
+    ) -> Result<FilterPipelines, String> {
+        if !filter_source.contains("fn effect(") {
+            return Err("the file must define fn effect(color: vec4<f32>, uv: vec2<f32>, src_uv: vec2<f32>) -> vec4<f32>".into());
+        }
+        let source = filter_shader_source(filter_source);
+        validate_filter(&source, filter_source.lines().count())?;
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("shader filter"),
+            source: wgpu::ShaderSource::Wgsl(source.into()),
+        });
+        Ok(FilterPipelines {
+            pipelines: make_pipelines(device, &self.pipeline_layout, &shader),
         })
     }
 
@@ -352,7 +361,8 @@ impl QuadRenderer {
         pass.set_vertex_buffer(0, vertex_buffer.slice(..));
         pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
         for (quad, first, count) in draws {
-            pass.set_pipeline(&self.pipelines[blend_index(quad.blend)]);
+            let pipelines = quad.filter.map_or(&self.pipelines, |f| &f.pipelines);
+            pass.set_pipeline(&pipelines[blend_index(quad.blend)]);
             let image = match quad.fill {
                 QuadFill::Image(binding) => binding,
                 _ => &self.blank,
@@ -362,6 +372,109 @@ impl QuadRenderer {
             pass.draw_indexed(first..first + count, 0, 0..1);
         }
     }
+}
+
+const QUAD_WGSL: &str = include_str!("shaders/quad.wgsl");
+const FILTER_BEGIN: &str = "// RUSTMAP_FILTER_BEGIN";
+const FILTER_END: &str = "// RUSTMAP_FILTER_END";
+
+/// The surface shader with its default `filter` replaced by `filter_source`.
+fn filter_shader_source(filter_source: &str) -> String {
+    let begin = QUAD_WGSL.find(FILTER_BEGIN).expect("filter marker");
+    let end = QUAD_WGSL.find(FILTER_END).expect("filter marker") + FILTER_END.len();
+    format!(
+        "{}{FILTER_BEGIN}\n{filter_source}\n{FILTER_END}{}",
+        &QUAD_WGSL[..begin],
+        &QUAD_WGSL[end..]
+    )
+}
+
+/// Line in the full shader where the filter's own line 1 is.
+fn filter_first_line() -> usize {
+    QUAD_WGSL[..QUAD_WGSL.find(FILTER_BEGIN).expect("filter marker")]
+        .lines()
+        .count()
+        + 2
+}
+
+/// Parses and validates a filter shader with naga, so a broken file gives
+/// a message instead of a GPU validation panic.
+fn validate_filter(source: &str, filter_lines: usize) -> Result<(), String> {
+    use wgpu::naga;
+    let first = filter_first_line();
+    let at = |line: u32| {
+        let line = line as usize;
+        if line >= first && line < first + filter_lines {
+            format!("line {}", line + 1 - first)
+        } else {
+            "built-in code".to_owned()
+        }
+    };
+    let module = naga::front::wgsl::parse_str(source).map_err(|e| {
+        let place = e
+            .location(source)
+            .map(|l| at(l.line_number))
+            .unwrap_or_default();
+        format!("{place}: {}", e.message())
+    })?;
+    naga::valid::Validator::new(
+        naga::valid::ValidationFlags::all(),
+        naga::valid::Capabilities::default(),
+    )
+    .validate(&module)
+    .map_err(|e| {
+        let place = e
+            .spans()
+            .next()
+            .map(|(span, _)| at(span.location(source).line_number))
+            .unwrap_or_default();
+        let mut msg = e.as_inner().to_string();
+        let mut cause = std::error::Error::source(e.as_inner());
+        while let Some(c) = cause {
+            msg = format!("{msg}: {c}");
+            cause = c.source();
+        }
+        format!("{place}: {msg}")
+    })?;
+    Ok(())
+}
+
+fn make_pipelines(
+    device: &wgpu::Device,
+    layout: &wgpu::PipelineLayout,
+    shader: &wgpu::ShaderModule,
+) -> [wgpu::RenderPipeline; 4] {
+    BlendMode::ALL.map(|mode| {
+        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("quad"),
+            layout: Some(layout),
+            vertex: wgpu::VertexState {
+                module: shader,
+                entry_point: Some("vs_main"),
+                compilation_options: Default::default(),
+                buffers: &[Some(wgpu::VertexBufferLayout {
+                    array_stride: std::mem::size_of::<Vertex>() as u64,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x2],
+                })],
+            },
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: shader,
+                entry_point: Some("fs_main"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: OUTPUT_FORMAT,
+                    blend: Some(blend_state(mode)),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        })
+    })
 }
 
 fn uniforms(quad: &QuadDraw<'_>) -> Uniforms {
@@ -404,8 +517,14 @@ fn uniforms(quad: &QuadDraw<'_>) -> Uniforms {
         contrast: c.contrast,
         saturation: c.saturation,
         hue: c.hue.to_radians(),
-        _pad: [0.0; 2],
+        posterize: if (1..=8).contains(&c.posterize) {
+            f32::from(1u16 << c.posterize)
+        } else {
+            0.0
+        },
+        time: quad.time,
         gain: [c.gain[0], c.gain[1], c.gain[2], 1.0],
+        params: quad.params,
         input: [
             m.x_axis.extend(0.0).to_array(),
             m.y_axis.extend(0.0).to_array(),

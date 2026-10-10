@@ -1,5 +1,5 @@
 use std::collections::{BTreeMap, HashMap};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -73,6 +73,7 @@ struct Graphics {
     overlay: OverlayRenderer,
     media: MediaManager,
     quad_states: HashMap<SurfaceId, QuadState>,
+    shaders: crate::shaders::ShaderCache,
     control: ControlWindow,
     outputs: BTreeMap<OutputId, OutputRuntime>,
     previews: HashMap<OutputId, egui::TextureId>,
@@ -159,6 +160,7 @@ impl App {
             overlay: OverlayRenderer::new(&gpu.device),
             media: MediaManager::default(),
             quad_states: HashMap::new(),
+            shaders: crate::shaders::ShaderCache::default(),
             gpu,
             control,
             outputs: BTreeMap::new(),
@@ -273,6 +275,30 @@ impl App {
     }
 
     /// Saves a DMX fixture type to a file (defaults to the user's fixture library folder).
+    /// Lets the user choose a WGSL shader filter for a surface.
+    fn pick_shader(&mut self, id: SurfaceId) {
+        let current = self
+            .project
+            .surface(id)
+            .and_then(|s| s.shader.as_ref())
+            .and_then(|f| f.path.parent().map(Path::to_path_buf));
+        let mut dialog = rfd::FileDialog::new()
+            .set_title("Choose a shader filter")
+            .add_filter("WGSL shader", &["wgsl"]);
+        if let Some(dir) = current.or_else(crate::shaders::examples_dir) {
+            dialog = dialog.set_directory(dir);
+        }
+        let Some(path) = dialog.pick_file() else {
+            return;
+        };
+        if let Some(s) = self.project.surface_mut(id) {
+            match &mut s.shader {
+                Some(f) => f.path = path,
+                None => s.shader = Some(rustmap_core::ShaderFilter::new(path)),
+            }
+        }
+    }
+
     fn export_dmx_type(&mut self, id: rustmap_core::DmxTypeId) {
         let Some(ty) = self.project.dmx_type(id) else {
             return;
@@ -416,6 +442,7 @@ impl App {
             UiAction::ImportImages { assign_to } => self.pick_images(assign_to),
             UiAction::ImportDmxTypes => self.import_dmx_types(),
             UiAction::ExportDmxType(id) => self.export_dmx_type(id),
+            UiAction::PickShader(id) => self.pick_shader(id),
             UiAction::GoCue(id) => {
                 let now = self.start.elapsed().as_secs_f64();
                 self.led.go(&mut self.project, id, now);
@@ -747,6 +774,7 @@ impl App {
                 dmx: &self.led.view,
                 osc: &self.osc.view,
                 video: &gfx.media.video_times,
+                shader_errors: &gfx.shaders.errors,
                 stats: &self.stats,
                 adapter: &adapter,
                 profiler_enabled: self.profiler.is_some(),
@@ -812,6 +840,14 @@ impl App {
                 .surfaces_on(config.id)
                 .filter(|s| s.visible)
                 .collect();
+            gfx.shaders.refresh(
+                &gfx.quads,
+                &gfx.gpu.device,
+                self.project
+                    .surfaces
+                    .iter()
+                    .filter_map(|s| s.shader.as_ref().map(|f| f.path.as_path())),
+            );
             // Built first so the draws can borrow them.
             let meshes: Vec<Option<MeshGrid>> = surfaces
                 .iter()
@@ -840,6 +876,9 @@ impl App {
                         input: rustmap_geom::quad_from_arrays(&s.input),
                         mask: s.mask.as_ref(),
                         color: s.color,
+                        filter: s.shader.as_ref().and_then(|f| gfx.shaders.get(&f.path)),
+                        params: s.shader.as_ref().map_or([0.0; 4], |f| f.params),
+                        time,
                     })
                 })
                 .collect();

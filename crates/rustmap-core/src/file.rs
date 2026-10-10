@@ -43,6 +43,17 @@ struct ShowFile {
     project: Project,
 }
 
+/// Every shader filter in the show: on surfaces and in cues.
+fn shader_filters(p: &mut Project) -> impl Iterator<Item = &mut crate::ShaderFilter> {
+    let surfaces = p.surfaces.iter_mut().filter_map(|s| s.shader.as_mut());
+    let cues = p
+        .cues
+        .iter_mut()
+        .flat_map(|c| c.surfaces.values_mut())
+        .filter_map(|l| l.shader.as_mut());
+    surfaces.chain(cues)
+}
+
 /// Saves `project` to `path` atomically.
 pub fn save(project: &Project, path: &Path) -> Result<(), FileError> {
     let base = path.parent().unwrap_or(Path::new("."));
@@ -51,6 +62,9 @@ pub fn save(project: &Project, path: &Path) -> Result<(), FileError> {
         if let Some(p) = m.path_mut() {
             *p = relative_to(p, base);
         }
+    }
+    for f in shader_filters(&mut stored) {
+        f.path = relative_to(&f.path, base);
     }
     let file = ShowFile {
         format: FORMAT.to_owned(),
@@ -95,6 +109,11 @@ pub fn load(path: &Path) -> Result<Project, FileError> {
             && p.is_relative()
         {
             *p = normalize(&base.join(&*p));
+        }
+    }
+    for f in shader_filters(&mut project) {
+        if f.path.is_relative() {
+            f.path = normalize(&base.join(&f.path));
         }
     }
     Ok(project)
@@ -236,6 +255,8 @@ mod tests {
         p.add_ndi("STUDIO (Resolume)");
         p.surface_mut(s).unwrap().media = Some(m);
         p.surface_mut(s).unwrap().corners[2] = [0.91, 0.87];
+        p.surface_mut(s).unwrap().color.posterize = 3;
+        p.surface_mut(s).unwrap().shader = Some(crate::ShaderFilter::new(dir.join("fx/wave.wgsl")));
         p.add_fixture(o, crate::Fixture::default_strip());
         let f = p.add_fixture(o, crate::Fixture::default_matrix()).unwrap();
         p.fixture_mut(f).unwrap().patch.protocol = crate::Protocol::Sacn;

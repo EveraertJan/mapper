@@ -223,9 +223,9 @@ pub(crate) fn inspector(
     egui::CollapsingHeader::new("Mask")
         .default_open(surface.mask.is_some())
         .show(ui, |ui| mask_editor(ui, surface, state));
-    egui::CollapsingHeader::new("Color")
-        .default_open(!surface.color.is_identity())
-        .show(ui, |ui| color_editor(ui, &mut surface.color));
+    if !surface.color.is_identity() {
+        ui.weak("Color adjusted in Filters (column 3)");
+    }
 
     if let Some(up) = restack {
         project.restack_surface(id, up);
@@ -388,7 +388,7 @@ fn mask_editor(ui: &mut egui::Ui, surface: &mut Surface, state: &mut UiState) {
     }
 }
 
-fn color_editor(ui: &mut egui::Ui, color: &mut ColorAdjust) {
+pub(crate) fn color_editor(ui: &mut egui::Ui, color: &mut ColorAdjust) {
     egui::Grid::new("color")
         .num_columns(2)
         .spacing([8.0, 4.0])

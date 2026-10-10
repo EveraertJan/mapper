@@ -16,8 +16,10 @@ struct Surface {
     contrast: f32,
     saturation: f32,
     hue: f32,           // radians
-    _pad: vec2<f32>,
+    posterize: f32,     // levels per channel; < 2 = off
+    time: f32,          // seconds, for shader filters
     gain: vec4<f32>,
+    params: vec4<f32>,  // shader filter knobs
     // Homography from surface uv to media uv (input region), as matrix columns.
     input: array<vec4<f32>, 3>,
     // Mask polygon in surface uv, two points per vec4.
@@ -133,8 +135,45 @@ fn adjust(c: vec3<f32>) -> vec3<f32> {
         let sn = sin(q.hue);
         rgb = rgb * cs + cross(k, rgb) * sn + k * dot(k, rgb) * (1.0 - cs);
     }
-    return clamp(rgb, vec3<f32>(0.0), vec3<f32>(1.0));
+    rgb = clamp(rgb, vec3<f32>(0.0), vec3<f32>(1.0));
+    if (q.posterize >= 2.0) {
+        let steps = q.posterize - 1.0;
+        rgb = floor(rgb * steps + vec3<f32>(0.5)) / steps;
+    }
+    return rgb;
 }
+
+// ---- for shader filters ----
+
+// Seconds since RUSTMAP started.
+fn rm_time() -> f32 {
+    return q.time;
+}
+
+// Knob `i` (0..3), 0..1, set in the Filters column.
+fn rm_param(i: u32) -> f32 {
+    return q.params[min(i, 3u)];
+}
+
+// The input at media uv `uv` (straight alpha). Safe anywhere in a filter.
+fn rm_sample(uv: vec2<f32>) -> vec4<f32> {
+    let c = textureSampleLevel(tex, samp, uv, 0.0);
+    if (c.a > 0.0) {
+        return vec4<f32>(c.rgb / c.a, c.a);
+    }
+    return vec4<f32>(0.0);
+}
+
+// Size of the input in pixels.
+fn rm_size() -> vec2<f32> {
+    return vec2<f32>(textureDimensions(tex, 0));
+}
+
+// RUSTMAP_FILTER_BEGIN
+fn effect(color: vec4<f32>, uv: vec2<f32>, src_uv: vec2<f32>) -> vec4<f32> {
+    return color;
+}
+// RUSTMAP_FILTER_END
 
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
@@ -151,9 +190,15 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         case 2u: { color = vec4<f32>(in.uv, 0.0, 1.0); }
         default: { color = image; }  // premultiplied
     }
-    // Color correction works on straight alpha; colors here are premultiplied.
+    // Filters work on straight alpha; colors here are premultiplied.
+    var straight = vec4<f32>(0.0);
     if (color.a > 0.0) {
-        color = vec4<f32>(adjust(color.rgb / color.a) * color.a, color.a);
+        straight = vec4<f32>(color.rgb / color.a, color.a);
     }
+    if (q.fill == 0u) {
+        straight = effect(straight, in.uv, src_uv);
+    }
+    let a = clamp(straight.a, 0.0, 1.0);
+    color = vec4<f32>(adjust(straight.rgb) * a, a);
     return color * (q.opacity * mask);
 }

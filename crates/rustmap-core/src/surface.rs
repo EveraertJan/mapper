@@ -44,6 +44,29 @@ pub struct Surface {
     pub mask: Option<Mask>,
     #[serde(default)]
     pub color: ColorAdjust,
+    /// A shader file applied to the picture (before the color adjustments).
+    #[serde(default)]
+    pub shader: Option<ShaderFilter>,
+}
+
+/// A WGSL filter from a file: it defines
+/// `fn effect(color: vec4<f32>, uv: vec2<f32>, src_uv: vec2<f32>) -> vec4<f32>`.
+/// See `assets/shaders/README.md`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ShaderFilter {
+    pub path: std::path::PathBuf,
+    /// Four knobs the shader reads with `rm_param(0..3)`, 0..1.
+    #[serde(default)]
+    pub params: [f32; 4],
+}
+
+impl ShaderFilter {
+    pub fn new(path: std::path::PathBuf) -> Self {
+        Self {
+            path,
+            params: [0.5; 4],
+        }
+    }
 }
 
 /// A warp grid: `cols × rows` control points, row-major, in normalized output space.
@@ -111,6 +134,8 @@ pub struct ColorAdjust {
     pub hue: f32,
     /// Per-channel multiplier, e.g. to match projectors.
     pub gain: [f32; 3],
+    /// Bits per color channel after posterizing (1..=8); 0 = off.
+    pub posterize: u8,
 }
 
 impl Default for ColorAdjust {
@@ -121,6 +146,7 @@ impl Default for ColorAdjust {
             saturation: 1.0,
             hue: 0.0,
             gain: [1.0; 3],
+            posterize: 0,
         }
     }
 }
@@ -223,6 +249,7 @@ impl Surface {
             mesh: None,
             mask: None,
             color: ColorAdjust::default(),
+            shader: None,
         }
     }
 

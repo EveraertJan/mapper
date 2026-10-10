@@ -102,9 +102,16 @@ pub(crate) fn list(
                     }
                     _ => {}
                 }
+                // Quick play / pause; the full transport is in Filters.
                 if let MediaSource::Video { playback, .. } = &media.source {
-                    let time = view.video.get(&media.id).copied().unwrap_or_default();
-                    if let Some(new) = transport(ui, media.id, *playback, time, actions) {
+                    let mut new = *playback;
+                    let label = if playback.paused { "Play" } else { "Pause" };
+                    if ui
+                        .small_button(label)
+                        .on_hover_text("Loop, speed and scrubbing: Filters (column 3)")
+                        .clicked()
+                    {
+                        new.paused = !new.paused;
                         playback_edits.push((media.id, new));
                     }
                 }
@@ -181,6 +188,28 @@ pub(crate) fn ndi_menu(
                 }
             }
         }
+    }
+}
+
+/// The full transport of a video (for the Filters column).
+pub(crate) fn video_controls(
+    ui: &mut egui::Ui,
+    project: &mut Project,
+    id: MediaId,
+    view: &ViewData<'_>,
+    actions: &mut Vec<UiAction>,
+) {
+    let Some(MediaSource::Video { playback, .. }) = project
+        .media
+        .iter_mut()
+        .find(|m| m.id == id)
+        .map(|m| &mut m.source)
+    else {
+        return;
+    };
+    let time = view.video.get(&id).copied().unwrap_or_default();
+    if let Some(new) = transport(ui, id, *playback, time, actions) {
+        *playback = new;
     }
 }
 

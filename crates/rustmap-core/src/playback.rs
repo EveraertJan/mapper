@@ -102,6 +102,8 @@ pub struct SurfaceLook {
     pub input: [[f32; 2]; 4],
     pub mesh: Option<Mesh>,
     pub mask: Option<Mask>,
+    #[serde(default)]
+    pub shader: Option<crate::surface::ShaderFilter>,
 }
 
 impl SurfaceLook {
@@ -117,6 +119,7 @@ impl SurfaceLook {
             input: s.input,
             mesh: s.mesh.clone(),
             mask: s.mask.clone(),
+            shader: s.shader.clone(),
         }
     }
 }
@@ -390,6 +393,7 @@ impl CuePlayer {
                     target.opacity = look.opacity;
                     target.blend = look.blend;
                     target.color = look.color;
+                    target.shader.clone_from(&look.shader);
                     if media_ok {
                         target.media = look.media;
                     }
@@ -425,6 +429,8 @@ impl CuePlayer {
                 // Switches happen at the start of the fade.
                 s.blend = target.blend;
                 s.media = target.media;
+                s.color.posterize = target.color.posterize;
+                s.shader.clone_from(&target.shader);
                 // Visibility fades through opacity.
                 let shown = |x: &Surface| if x.visible { x.opacity } else { 0.0 };
                 let hide_with = (!target.visible).then_some(target.opacity);

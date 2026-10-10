@@ -17,6 +17,9 @@ struct ExtraM5 {
     mask: Option<Mask>,
     color: ColorAdjust,
     edge_blend: Option<EdgeBlend>,
+    /// WGSL shader filter source.
+    filter: Option<String>,
+    params: [f32; 4],
 }
 
 struct Extra {
@@ -83,6 +86,11 @@ impl Ctx {
         let target = OutputTarget::new(device, [SIZE, SIZE], "test");
         let pattern = self.patterns.create_state(device);
         let state = self.quads.create_state(device);
+        let filter = extra.m5.filter.as_ref().map(|src| {
+            self.quads
+                .compile_filter(device, src)
+                .expect("test filter compiles")
+        });
         let mut encoder = device.create_command_encoder(&Default::default());
         self.patterns.render(
             &self.gpu.queue,
@@ -112,6 +120,9 @@ impl Ctx {
                 input: extra.input,
                 mask: extra.m5.mask.as_ref(),
                 color: extra.m5.color,
+                filter: filter.as_ref(),
+                params: extra.m5.params,
+                time: 0.0,
             }],
         );
         if let Some(blend) = &extra.m5.edge_blend {
@@ -559,4 +570,104 @@ fn edge_blend_ramps_match_the_cpu_formula() {
     let want = (blend.ramp(0.5) * 255.0).round() as i32;
     let got = px(&img, x, 256)[0] as i32;
     assert!((got - want).abs() <= 3, "got {got}, want {want}");
+}
+
+fn one_pixel(ctx: &Ctx, rgba: [u8; 4]) -> rustmap_render::ImageBinding {
+    let data = ImageData::from_rgba(image::RgbaImage::from_pixel(1, 1, image::Rgba(rgba)), 16);
+    let img = GpuImage::upload(&ctx.gpu.device, &ctx.gpu.queue, &data, "px");
+    ctx.quads.bind_image(&ctx.gpu.device, &img)
+}
+
+#[test]
+fn posterize_quantizes_each_channel() {
+    let Some(ctx) = ctx() else { return };
+    let b = one_pixel(&ctx, [200, 100, 50, 255]);
+    let run = |bits| {
+        let out = ctx.render_with(
+            TestPattern::Off,
+            full(),
+            1.0,
+            QuadFill::Image(&b),
+            extra(ExtraM5 {
+                color: ColorAdjust {
+                    posterize: bits,
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
+        );
+        px(&out, 256, 256)
+    };
+    // 1 bit: each channel is either off or full.
+    assert_eq!(&run(1)[..3], &[255, 0, 0]);
+    // 2 bits: 4 levels (0, 85, 170, 255).
+    assert_eq!(&run(2)[..3], &[170, 85, 85]);
+    // 8 bits: unchanged.
+    let same = run(8);
+    assert!(
+        same[0].abs_diff(200) <= 1 && same[1].abs_diff(100) <= 1,
+        "{same:?}"
+    );
+}
+
+#[test]
+fn shader_filters_run_and_read_their_knobs() {
+    let Some(ctx) = ctx() else { return };
+    let b = one_pixel(&ctx, [200, 100, 50, 255]);
+    let filter = "fn effect(color: vec4<f32>, uv: vec2<f32>, src_uv: vec2<f32>) -> vec4<f32> {\n    \
+                  let inv = vec4<f32>(vec3<f32>(1.0) - color.rgb, color.a);\n    \
+                  return mix(color, inv, rm_param(0u)) * vec4<f32>(1.0, 1.0, rm_sample(src_uv).r, 1.0);\n}";
+    let out = ctx.render_with(
+        TestPattern::Off,
+        full(),
+        1.0,
+        QuadFill::Image(&b),
+        extra(ExtraM5 {
+            filter: Some(filter.into()),
+            params: [1.0, 0.0, 0.0, 0.0],
+            ..Default::default()
+        }),
+    );
+    let p = px(&out, 256, 256);
+    // Inverted: 55, 155, 205; blue then scaled by the sampled red (200/255).
+    assert!(p[0].abs_diff(55) <= 2 && p[1].abs_diff(155) <= 2, "{p:?}");
+    assert!(p[2].abs_diff(161) <= 3, "{p:?}");
+}
+
+#[test]
+fn broken_shader_filters_report_their_own_line() {
+    let Some(ctx) = ctx() else { return };
+    let err = ctx
+        .quads
+        .compile_filter(
+            &ctx.gpu.device,
+            "// my filter\nfn effect(color: vec4<f32>, uv: vec2<f32>, src_uv: vec2<f32>) -> vec4<f32> {\n    return nope(color);\n}",
+        )
+        .err()
+        .expect("must fail");
+    assert!(err.starts_with("line 3"), "{err}");
+    let err = ctx
+        .quads
+        .compile_filter(&ctx.gpu.device, "fn other() {}")
+        .err()
+        .expect("needs fn effect");
+    assert!(err.contains("fn effect"), "{err}");
+}
+
+#[test]
+fn example_shader_filters_compile() {
+    let Some(ctx) = ctx() else { return };
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/shaders");
+    let mut n = 0;
+    for entry in std::fs::read_dir(&dir).expect("assets/shaders") {
+        let path = entry.unwrap().path();
+        if path.extension().is_some_and(|e| e == "wgsl") {
+            let src = std::fs::read_to_string(&path).unwrap();
+            if let Err(err) = ctx.quads.compile_filter(&ctx.gpu.device, &src) {
+                panic!("{}: {err}", path.display());
+            }
+            n += 1;
+        }
+    }
+    assert!(n >= 6);
 }

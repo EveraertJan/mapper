@@ -29,4 +29,6 @@ pub use playback::{
     group_controls,
 };
 pub use project::{OscSettings, Project};
-pub use surface::{BlendMode, ColorAdjust, MASK_MAX_POINTS, Mask, Mesh, Shape, Surface, SurfaceId};
+pub use surface::{
+    BlendMode, ColorAdjust, MASK_MAX_POINTS, Mask, Mesh, ShaderFilter, Shape, Surface, SurfaceId,
+};

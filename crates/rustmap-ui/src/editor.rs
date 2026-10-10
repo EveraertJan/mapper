@@ -35,7 +35,13 @@ pub(crate) enum Drag {
     /// A whole LED fixture.
     FixtureMove { fixture: FixtureId, last: Vec2 },
     /// Same, for a surface's input region (Input view).
-    InputCorner { surface: SurfaceId, corner: usize },
+    /// `start`: the region when the drag began (or when Shift was last
+    /// held), which a plain drag scales about its center.
+    InputCorner {
+        surface: SurfaceId,
+        corner: usize,
+        start: [[f32; 2]; 4],
+    },
     InputMove {
         surface: SurfaceId,
         start: [[f32; 2]; 4],

@@ -27,14 +27,18 @@ rustmap MyShow.production.rustmap
 
 ## Using it
 
-The window follows the signal from left to right, in four columns, with the cue list along the bottom:
+The window follows the signal from left to right, in five columns (each with its number and name on a vertical strip down its left edge), with the cue list along the bottom:
 
-1. **Inputs**: images, videos and NDI sources. `+` adds them; you can also drop files on the window. Click a name to map it in column 2. **Use** puts it on the selected surface. Videos get Play/Pause, back-to-start, Loop, speed and a scrub bar.
-2. **Input mapping**: the selected input whole, with the region every surface takes from it (and which output that surface is on). Click a region to select its surface; drag its corners or the region (crop, rotate, un-keystone). **+ Region** makes a new surface from this input on the selected output; **Use for …** gives this input to the selected surface; **Full frame** resets the region.
-3. **Outputs**: projectors (tick to open the window), the selected projector's surfaces (top of the list is drawn on top) and LED fixtures, and the DMX fixtures. Below: settings of the selected projector, LED fixture or DMX fixture (resolution, monitor, fullscreen, NDI out, guides, test pattern, edge blend; patch and channels).
-4. **Output mapping**: **Mapping** shows the selected output's live image; drag a corner, or inside a surface to move it. Under it, the selected surface's settings (media, opacity, shape, blend, exact corner pixels, Match media aspect, mesh warp, mask, color). **Console** and **DMX** show the DMX faders and the universe monitor; selecting a DMX fixture opens the Console.
+1. **Inputs**: images, videos and NDI sources. `+` adds them; you can also drop files on the window. Click a name to map it in column 2. **Use** puts it on the selected surface; videos have a quick Play/Pause.
+2. **Input mapping**: the selected input whole, with the region every surface takes from it (and which output that surface is on). Click a region to select its surface; drag a corner to scale the region about its center, keeping its shape (Shift: move just that corner), or drag inside to move it. **+ Region** makes a new surface from this input on the selected output; **Use for …** gives this input to the selected surface; **Full frame** resets the region.
+3. **Filters** (collapsed by default; click its strip to open or close): the selected input's video transport (play/pause, back to start, loop, speed, scrub bar), and for the selected surface, in this order:
+   - **Shader**: a WGSL file of your own (*Choose file…*), with four knobs A–D. It recompiles when you save the file; errors show here with the line number. Examples and the (short) contract are in `assets/shaders/`: invert, pixelate, scanlines, wave, RGB split, threshold.
+   - **Color**: brightness, contrast, saturation, hue, RGB gain.
+   - **Posterize**: bits per color channel (1–8; quick picks 2, 6 and 8 bit).
+4. **Outputs**: projectors (tick to open the window), the selected projector's surfaces (top of the list is drawn on top) and LED fixtures, and the DMX fixtures. Below: settings of the selected projector, LED fixture or DMX fixture (resolution, monitor, fullscreen, NDI out, guides, test pattern, edge blend; patch and channels).
+5. **Output mapping**: **Mapping** shows the selected output's live image; drag a corner, or inside a surface to move it. Under it, the selected surface's settings (media, opacity, shape, blend, exact corner pixels, Match media aspect, mesh warp, mask). **Console** and **DMX** show the DMX faders and the universe monitor; selecting a DMX fixture opens the Console.
 
-Arrow keys nudge in the column you last clicked in (input region or output corners). Columns 1–3 can be resized by dragging their edges.
+Arrow keys nudge in the column you last clicked in (input region or output corners). Columns 1–4 can be resized by dragging their edges.
 
 **Zoom** works the same on the input and output canvas: pinch on a trackpad, or Cmd+scroll (Ctrl+scroll on Windows/Linux), zooms around the pointer (up to 40×). While zoomed, scrolling or a two-finger swipe pans, and so do a middle-button drag or Space + drag. *Fit* (top right while zoomed) or a middle double-click shows the whole frame again. Each input and each output keeps its own zoom; handles stay the same size on screen, so zooming in gives finer control.
 
