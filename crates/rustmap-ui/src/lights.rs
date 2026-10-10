@@ -432,9 +432,8 @@ fn ranges_editor(ui: &mut egui::Ui, c: &mut ChannelDef) {
 
 // ---- console ----
 
-/// The cue list as a bottom panel of the editor, in every tab: half the
-/// Console when open (a smaller strip elsewhere), one row of buttons when
-/// collapsed. The tab's own content fills the rest.
+/// The cue list as a bottom panel under all columns; one row of buttons
+/// when collapsed.
 pub(crate) fn cue_panel(
     ui: &mut egui::Ui,
     project: &mut Project,
@@ -442,25 +441,16 @@ pub(crate) fn cue_panel(
     view: &ViewData<'_>,
     actions: &mut Vec<UiAction>,
 ) {
-    let console = state.editor_mode == crate::EditorMode::Console;
     let panel = if state.cues_open {
-        let (id, size) = if console {
-            (
-                "cues_open_console",
-                (ui.available_height() * 0.5).max(120.0),
-            )
-        } else {
-            ("cues_open_editor", 190.0)
-        };
-        egui::Panel::bottom(id)
+        egui::Panel::bottom("cues_open")
             .resizable(true)
-            .default_size(size)
+            .default_size(180.0)
             .min_size(90.0)
     } else {
         egui::Panel::bottom("cues_closed").resizable(false)
     };
     panel
-        .frame(egui::Frame::NONE.inner_margin(egui::Margin::symmetric(0, 6)))
+        .frame(egui::Frame::side_top_panel(ui.style()).inner_margin(egui::Margin::symmetric(8, 6)))
         .show(ui, |ui| cues(ui, project, state, view, actions));
 }
 

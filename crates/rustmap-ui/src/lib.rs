@@ -16,6 +16,7 @@ mod stats;
 mod surfaces;
 mod theme;
 pub mod warp;
+mod zoom;
 
 use std::collections::HashMap;
 
@@ -79,14 +80,12 @@ impl UiState {
     }
 }
 
-/// What the center editor shows.
+/// What the output mapping column shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum EditorMode {
-    /// Where surfaces land on the output.
+    /// Where surfaces land on the selected output.
     #[default]
     Output,
-    /// Which part of its media the selected surface shows.
-    Input,
     /// Faders for the DMX fixtures.
     Console,
     /// Live DMX values of every universe the LED fixtures use.
@@ -232,6 +231,17 @@ pub struct UiState {
     pub selected_fixture: Option<FixtureId>,
     /// Selected DMX fixture (shown in the inspector and highlighted in the console).
     pub selected_dmx: Option<DmxFixtureId>,
+    /// Media shown in the input mapping column (follows the selected surface).
+    pub selected_media: Option<MediaId>,
+    /// Arrow keys nudge in the input mapping column (last clicked there)
+    /// rather than on the output.
+    pub input_keys: bool,
+    /// Surface whose media `selected_media` was last synced to.
+    media_follows: Option<SurfaceId>,
+    /// Zoom of the input canvas, per input.
+    input_zoom: HashMap<MediaId, zoom::CanvasZoom>,
+    /// Zoom of the output canvas, per output.
+    output_zoom: HashMap<OutputId, zoom::CanvasZoom>,
     /// Console: cue list expanded (collapsed keeps only its buttons).
     pub cues_open: bool,
     /// Handle of the selected surface that arrow keys move: a corner (TL, TR,
@@ -254,6 +264,11 @@ impl Default for UiState {
             selected_surface: None,
             selected_fixture: None,
             selected_dmx: None,
+            selected_media: None,
+            input_keys: false,
+            media_follows: None,
+            input_zoom: HashMap::new(),
+            output_zoom: HashMap::new(),
             cues_open: true,
             selected_corner: None,
             layer: EditLayer::Warp,
@@ -301,6 +316,27 @@ impl UiState {
     /// Drops selections that point at things that no longer exist, and keeps
     /// the selected surface on the selected output.
     fn validate(&mut self, project: &Project) {
+        // Selecting a surface shows its media in the input column (once,
+        // so another input can still be picked to give it).
+        if self.selected_surface != self.media_follows {
+            self.media_follows = self.selected_surface;
+            if let Some(m) = self
+                .selected_surface
+                .and_then(|id| project.surface(id))
+                .and_then(|s| s.media)
+            {
+                self.selected_media = Some(m);
+            }
+        }
+        if self
+            .selected_media
+            .is_some_and(|id| project.media_item(id).is_none())
+        {
+            self.selected_media = None;
+        }
+        if self.selected_media.is_none() {
+            self.selected_media = project.media.first().map(|m| m.id);
+        }
         if self.selected.is_some_and(|id| project.output(id).is_none()) {
             self.selected = None;
         }
@@ -441,60 +477,134 @@ pub fn draw(
         stats::status_bar(ui, view, &mut actions);
     });
 
-    egui::Panel::left("project")
+    // The cue list runs along the bottom, under all four columns.
+    lights::cue_panel(ui, project, state, view, &mut actions);
+
+    // Four columns, in the order a signal travels:
+    // 1 input sources · 2 input mapping · 3 outputs · 4 output mapping.
+    let before = (
+        state.selected_dmx,
+        state.selected_surface,
+        state.selected_fixture,
+        state.selected,
+    );
+    let total = ui.available_width();
+    egui::Panel::left("col_inputs")
         .resizable(true)
-        .default_size(220.0)
+        .default_size(210.0)
+        .size_range(160.0..=360.0)
         .show(ui, |ui| {
+            column_title(ui, "1", "INPUTS", "Media: images, videos and NDI sources");
             egui::ScrollArea::vertical().show(ui, |ui| {
-                outputs::list(ui, project, state);
-                ui.add_space(12.0);
-                surfaces::list(ui, project, state);
-                ui.add_space(12.0);
-                fixtures::list(ui, project, state);
-                ui.add_space(12.0);
-                lights::list(ui, project, state, &mut actions);
-                ui.add_space(12.0);
                 media::list(ui, project, state, view, &mut actions);
             });
         });
-
-    egui::Panel::right("inspector")
+    egui::Panel::left("col_input_mapping")
         .resizable(true)
-        .default_size(290.0)
+        .default_size(((total - 210.0 - 250.0) * 0.42).max(260.0))
+        .min_size(200.0)
         .show(ui, |ui| {
+            column_title(
+                ui,
+                "2",
+                "INPUT MAPPING",
+                "Which part of the selected input each surface uses",
+            );
+            input::show(ui, project, state, view);
+        });
+    egui::Panel::left("col_outputs")
+        .resizable(true)
+        .default_size(250.0)
+        .size_range(190.0..=420.0)
+        .show(ui, |ui| {
+            column_title(
+                ui,
+                "3",
+                "OUTPUTS",
+                "Projectors with their surfaces and LED fixtures, and DMX fixtures",
+            );
             egui::ScrollArea::vertical().show(ui, |ui| {
+                outputs::list(ui, project, state);
+                ui.add_space(10.0);
+                surfaces::list(ui, project, state);
+                ui.add_space(10.0);
+                fixtures::list(ui, project, state);
+                ui.add_space(10.0);
+                lights::list(ui, project, state, &mut actions);
+                ui.add_space(14.0);
+                // Settings of what is selected in this column.
                 if state.selected_dmx.is_some() {
-                    egui::CollapsingHeader::new("DMX fixture")
+                    egui::CollapsingHeader::new(egui::RichText::new("DMX fixture").strong())
                         .default_open(true)
                         .show(ui, |ui| lights::inspector(ui, project, state, &mut actions));
-                }
-                if state.selected_fixture.is_some() {
-                    egui::CollapsingHeader::new("LED fixture")
+                } else if state.selected_fixture.is_some() {
+                    egui::CollapsingHeader::new(egui::RichText::new("LED fixture").strong())
                         .default_open(true)
                         .show(ui, |ui| fixtures::inspector(ui, project, state));
                 }
-                if state.selected_surface.is_some() {
-                    egui::CollapsingHeader::new("Surface")
-                        .default_open(true)
-                        .show(ui, |ui| {
-                            surfaces::inspector(ui, project, state, view, &mut actions)
-                        });
-                }
-                egui::CollapsingHeader::new("Output")
-                    .default_open(
-                        state.selected_surface.is_none()
-                            && state.selected_fixture.is_none()
-                            && state.selected_dmx.is_none(),
-                    )
+                egui::CollapsingHeader::new(egui::RichText::new("Output settings").strong())
+                    .default_open(state.selected_dmx.is_none() && state.selected_fixture.is_none())
                     .show(ui, |ui| outputs::inspector(ui, project, state, view));
             });
         });
 
+    // Picking something in a column shows where it is edited in column 4.
+    let after = (
+        state.selected_dmx,
+        state.selected_surface,
+        state.selected_fixture,
+        state.selected,
+    );
+    if after != before {
+        if after.0.is_some() && after.0 != before.0 {
+            if state.editor_mode == EditorMode::Output {
+                state.editor_mode = EditorMode::Console;
+            }
+        } else if after.1 != before.1 || after.2 != before.2 || after.3 != before.3 {
+            state.editor_mode = EditorMode::Output;
+        }
+    }
+
     egui::CentralPanel::default().show(ui, |ui| {
-        editor::show(ui, project, state, view, &mut actions)
+        column_title(
+            ui,
+            "4",
+            "OUTPUT MAPPING",
+            "Where everything lands on the selected output, or the DMX console",
+        );
+        if state.editor_mode == EditorMode::Output && state.selected_surface.is_some() {
+            egui::Panel::bottom("surface_settings")
+                .resizable(true)
+                .default_size(230.0)
+                .min_size(60.0)
+                .show(ui, |ui| {
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        ui.add_space(4.0);
+                        ui.strong("Surface settings");
+                        surfaces::inspector(ui, project, state, view, &mut actions);
+                    });
+                });
+        }
+        editor::show(ui, project, state, view)
     });
 
     actions
+}
+
+/// Numbered heading of one of the four columns.
+fn column_title(ui: &mut egui::Ui, number: &str, title: &str, help: &str) {
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        ui.label(
+            egui::RichText::new(number)
+                .monospace()
+                .strong()
+                .color(theme::SELECTION),
+        );
+        ui.label(egui::RichText::new(title).strong().size(13.0))
+            .on_hover_text(help);
+    });
+    ui.add_space(2.0);
 }
 
 /// Shortcut label: ⌘ on macOS, Ctrl elsewhere.

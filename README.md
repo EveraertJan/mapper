@@ -27,11 +27,16 @@ rustmap MyShow.production.rustmap
 
 ## Using it
 
-- **Outputs** (left, top): one per projector. Tick the checkbox to open its window.
-- **Surfaces** (left): quads on the selected output. Top of the list is drawn on top.
-- **Media** (left, bottom): images, videos and NDI sources. `+` adds them; you can also drop files on the window. **Use** puts the media on the selected surface. Videos get Play/Pause, back-to-start, Loop, speed and a scrub bar.
-- **Editor** (center): **Output** tab: the selected output's live image; drag a corner, or drag inside a surface to move it. **Input** tab: the selected surface's media; drag the region it should show (crop, rotate, un-keystone).
-- **Inspector** (right): surface settings (media, opacity, shape: quad/triangle/circle, blend: normal/add/screen/multiply, input region, exact corner pixels, Match media aspect, mesh warp, mask, color) and output settings (resolution, monitor, fullscreen, NDI out, guides, test pattern, edge blend).
+The window follows the signal from left to right, in four columns, with the cue list along the bottom:
+
+1. **Inputs**: images, videos and NDI sources. `+` adds them; you can also drop files on the window. Click a name to map it in column 2. **Use** puts it on the selected surface. Videos get Play/Pause, back-to-start, Loop, speed and a scrub bar.
+2. **Input mapping**: the selected input whole, with the region every surface takes from it (and which output that surface is on). Click a region to select its surface; drag its corners or the region (crop, rotate, un-keystone). **+ Region** makes a new surface from this input on the selected output; **Use for …** gives this input to the selected surface; **Full frame** resets the region.
+3. **Outputs**: projectors (tick to open the window), the selected projector's surfaces (top of the list is drawn on top) and LED fixtures, and the DMX fixtures. Below: settings of the selected projector, LED fixture or DMX fixture (resolution, monitor, fullscreen, NDI out, guides, test pattern, edge blend; patch and channels).
+4. **Output mapping**: **Mapping** shows the selected output's live image; drag a corner, or inside a surface to move it. Under it, the selected surface's settings (media, opacity, shape, blend, exact corner pixels, Match media aspect, mesh warp, mask, color). **Console** and **DMX** show the DMX faders and the universe monitor; selecting a DMX fixture opens the Console.
+
+Arrow keys nudge in the column you last clicked in (input region or output corners). Columns 1–3 can be resized by dragging their edges.
+
+**Zoom** works the same on the input and output canvas: pinch on a trackpad, or Cmd+scroll (Ctrl+scroll on Windows/Linux), zooms around the pointer (up to 40×). While zoomed, scrolling or a two-finger swipe pans, and so do a middle-button drag or Space + drag. *Fit* (top right while zoomed) or a middle double-click shows the whole frame again. Each input and each output keeps its own zoom; handles stay the same size on screen, so zooming in gives finer control.
 
 In the editor:
 

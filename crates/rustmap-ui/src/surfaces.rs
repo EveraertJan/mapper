@@ -146,18 +146,6 @@ pub(crate) fn inspector(
 
             ui.label("Input");
             ui.horizontal(|ui| {
-                let editing = state.editor_mode == crate::EditorMode::Input;
-                if ui
-                    .selectable_label(editing, "Edit region")
-                    .on_hover_text("Choose which part of the media this surface shows (Input view)")
-                    .clicked()
-                {
-                    state.editor_mode = if editing {
-                        crate::EditorMode::Output
-                    } else {
-                        crate::EditorMode::Input
-                    };
-                }
                 if ui
                     .add_enabled(
                         surface.input != Surface::FULL,

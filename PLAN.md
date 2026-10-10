@@ -197,6 +197,11 @@ Moved ahead of video (2026-10-08).
 - **OSC remote** (new crate `rustmap-osc`, `rosc`, MIT/Apache): a UDP listener thread (port 8000 by default, set in the Cues panel) for `/rustmap/cue/go <n|name>`, `/rustmap/cue/go/<n>`, `/rustmap/cue/next`, `/rustmap/cue/back`, `/rustmap/cue/current`, `/rustmap/blackout`, `/rustmap/master`. Bundles are unpacked; a 0 argument on a trigger is a button release and is ignored. *Recent OSC* lists the last messages and what they did. Listening is saved, kept out of undo. Verified with unit tests, a UDP loopback test and the running app.
 - Not done: chases (cue sequences on a BPM clock), GDTF / Open Fixture Library import, follow-image (a fixture's color from a point of the output), OSC feedback (sending the current cue back to the controller), OSC for group faders, MIDI.
 
+### UI: chronological columns (branch `chronological`, 2026-10-10)
+- The control window follows the signal left to right: **1 Inputs** (media) · **2 Input mapping** (the selected input with every surface's region on it, + Region, Use for, Full frame) · **3 Outputs** (projectors with their surfaces and LED fixtures, DMX fixtures, and the selected item's settings) · **4 Output mapping** (output canvas with the surface settings below it, or Console / DMX monitor). Cues run along the bottom under all columns.
+- The old Input tab and right-hand inspector are gone; arrow keys nudge in the column last clicked.
+- Still to try: DMX / LED fixtures that take their color from a region of an input (the follow-image idea fits column 2), dragging an input onto an output, a narrower layout for small screens.
+
 ### M6D — Phone fine-tuning (planned)
 Fine-tune a mapping from up close, with a phone, standing at the projection surface instead of at the computer.
 - **Pairing**: a *Fine-tune with phone* button opens a modal with a QR code. The code holds a URL to a small web server inside the app (plain HTTP + WebSocket, local network only) with a one-time token, so nothing is installed on the phone and a stranger on the same Wi-Fi can't join. The modal shows the address and the connected device, and a Disconnect button.

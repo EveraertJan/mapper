@@ -11,7 +11,7 @@ use rustmap_geom::{
 
 use crate::theme::SELECTION;
 use crate::warp::{Warp, corner_handle, mask_handles, set_warp_handle, warp_handles};
-use crate::{EditLayer, UiAction, UiState, ViewData};
+use crate::{EditLayer, UiState, ViewData};
 
 /// Grab radius around a corner, in screen points.
 pub(crate) const HANDLE_HIT: f32 = 12.0;
@@ -72,7 +72,6 @@ pub(crate) fn show(
     project: &mut Project,
     state: &mut UiState,
     view: &ViewData<'_>,
-    actions: &mut Vec<UiAction>,
 ) {
     let Some(output_id) = state.selected else {
         ui.centered_and_justified(|ui| {
@@ -88,13 +87,15 @@ pub(crate) fn show(
     let resolution = output.resolution;
     let preview = view.previews.get(&output_id).copied();
 
-    // Output / Input tabs.
+    // Mapping / Console / DMX tabs.
     let mode_before = state.editor_mode;
     ui.horizontal(|ui| {
-        ui.selectable_value(&mut state.editor_mode, crate::EditorMode::Output, "Output")
-            .on_hover_text("Where surfaces land on the projector");
-        ui.selectable_value(&mut state.editor_mode, crate::EditorMode::Input, "Input")
-            .on_hover_text("Which part of its media the selected surface shows");
+        ui.selectable_value(
+            &mut state.editor_mode,
+            crate::EditorMode::Output,
+            format!("Mapping: {}", output.name),
+        )
+        .on_hover_text("Where surfaces and LED fixtures land on this output");
         ui.selectable_value(
             &mut state.editor_mode,
             crate::EditorMode::Console,
@@ -123,12 +124,7 @@ pub(crate) fn show(
         state.selected_corner = None;
         state.drag = None;
     }
-    crate::lights::cue_panel(ui, project, state, view, actions);
     match state.editor_mode {
-        crate::EditorMode::Input => {
-            crate::input::show(ui, project, state, view);
-            return;
-        }
         crate::EditorMode::Console => {
             crate::lights::console(ui, project, state);
             return;
@@ -158,15 +154,30 @@ pub(crate) fn show(
     if size.x < 16.0 || size.y < 16.0 {
         return;
     }
+    let fitted = Rect::from_center_size(area.center(), size);
+    let canvas = Rect::from_min_max(avail.min, Pos2::new(avail.max.x, avail.max.y - HELP_HEIGHT));
+    let response = ui.allocate_rect(canvas, Sense::click_and_drag());
+    let mut zoom = state
+        .output_zoom
+        .get(&output_id)
+        .copied()
+        .unwrap_or_default();
+    let panning = zoom.interact(ui, &response, fitted);
     let v = View {
-        rect: Rect::from_center_size(area.center(), size),
+        rect: zoom.apply(fitted),
     };
-    let response = ui.allocate_rect(v.rect, Sense::click_and_drag());
 
-    handle_pointer(ui, &response, project, state, output_id, v);
-    handle_keys(ui, project, state, resolution);
+    if response.is_pointer_button_down_on() {
+        state.input_keys = false; // arrow keys now nudge on the output
+    }
+    if !panning && !response.dragged_by(egui::PointerButton::Middle) {
+        handle_pointer(ui, &response, project, state, output_id, v);
+    }
+    if !state.input_keys {
+        handle_keys(ui, project, state, resolution);
+    }
 
-    let painter = ui.painter_at(avail);
+    let painter = ui.painter_at(canvas);
     match preview {
         Some(tex) => {
             painter.image(
@@ -226,12 +237,20 @@ pub(crate) fn show(
         );
     }
 
+    zoom.overlay(ui, canvas);
+    state.output_zoom.insert(output_id, zoom);
+
     let snap_hint = if state.snapping {
         "Alt: no snapping"
     } else {
         "snapping off"
     };
-    painter.text(
+    // Clipped so it never runs under the Snapping checkbox.
+    let help = ui.painter_at(Rect::from_min_max(
+        avail.min,
+        Pos2::new(avail.max.x - 116.0, avail.max.y),
+    ));
+    help.text(
         Pos2::new(avail.min.x + 8.0, avail.max.y - 6.0),
         egui::Align2::LEFT_BOTTOM,
         if state.selected_fixture.is_some() {
