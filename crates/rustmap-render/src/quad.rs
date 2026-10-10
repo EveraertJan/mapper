@@ -1,4 +1,7 @@
-use rustmap_core::{BlendMode, ColorAdjust, MASK_MAX_POINTS, Mask, Shape};
+use rustmap_core::shaders::MAX_CHAIN_PARAMS;
+use rustmap_core::{BlendMode, MASK_MAX_POINTS, Mask, Shape};
+
+use crate::chain::ChainShader;
 use rustmap_geom::{MeshGrid, Quad, corner_weights, square_to_quad};
 use wgpu::util::DeviceExt;
 
@@ -18,18 +21,18 @@ struct Uniforms {
     mask_count: u32,
     mask_feather: f32,
     mask_invert: u32,
-    brightness: f32,
-    contrast: f32,
-    saturation: f32,
-    hue: f32,
-    _pad: [f32; 2],
-    gain: [f32; 4],
+    time: f32,
+    _pad: f32,
+    /// Shader chain parameters, four per vec4.
+    params: [[f32; 4]; MAX_CHAIN_PARAMS / 4],
     input: [[f32; 4]; 3],
     /// Two mask points per vec4.
     mask: [[f32; 4]; MASK_MAX_POINTS / 2],
 }
 
-const _: () = assert!(std::mem::size_of::<Uniforms>() == 112 + 16 * MASK_MAX_POINTS / 2);
+const _: () = assert!(
+    std::mem::size_of::<Uniforms>() == 32 + 4 * MAX_CHAIN_PARAMS + 48 + 16 * MASK_MAX_POINTS / 2
+);
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
@@ -43,6 +46,21 @@ struct Vertex {
 /// An image bound for drawing on quads (texture + sampler bind group).
 pub struct ImageBinding {
     bind_group: wgpu::BindGroup,
+    /// Pixel size of the image.
+    pub size: [u32; 2],
+}
+
+/// The two images a surface's own-pass shaders render into, in turn.
+pub struct PassTargets {
+    size: [u32; 2],
+    bindings: [ImageBinding; 2],
+    views: [wgpu::TextureView; 2],
+}
+
+impl PassTargets {
+    pub fn size(&self) -> [u32; 2] {
+        self.size
+    }
 }
 
 /// What a quad shows.
@@ -76,7 +94,28 @@ pub struct QuadDraw<'a> {
     /// Region of the media to show (media uv space, same corner order).
     pub input: Quad,
     pub mask: Option<&'a Mask>,
-    pub color: ColorAdjust,
+    /// The compiled shader chain, or `None` for the plain pipeline.
+    pub filter: Option<&'a FilterPipelines>,
+    /// The chain's parameter values, one after the other.
+    pub params: [f32; MAX_CHAIN_PARAMS],
+    /// Images for the chain's own passes (needed when it has any).
+    pub passes: Option<&'a PassTargets>,
+    /// Seconds, for animated filters.
+    pub time: f32,
+}
+
+/// A compiled shader chain: the surface pipelines (one per blend mode) for
+/// its last part, and a pass pipeline for each earlier part.
+pub struct FilterPipelines {
+    pipelines: [wgpu::RenderPipeline; 4],
+    passes: Vec<wgpu::RenderPipeline>,
+}
+
+impl FilterPipelines {
+    /// Extra render passes this chain needs (own-pass shaders).
+    pub fn pass_count(&self) -> usize {
+        self.passes.len()
+    }
 }
 
 impl<'a> QuadDraw<'a> {
@@ -97,7 +136,10 @@ impl<'a> QuadDraw<'a> {
                 rustmap_geom::Vec2::new(0.0, 1.0),
             ],
             mask: None,
-            color: ColorAdjust::default(),
+            filter: None,
+            params: [0.0; MAX_CHAIN_PARAMS],
+            passes: None,
+            time: 0.0,
         }
     }
 }
@@ -105,6 +147,7 @@ impl<'a> QuadDraw<'a> {
 /// Draws perspective-correct or mesh-warped textured surfaces.
 pub struct QuadRenderer {
     pipelines: [wgpu::RenderPipeline; 4],
+    pipeline_layout: wgpu::PipelineLayout,
     uniform_layout: wgpu::BindGroupLayout,
     image_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
@@ -154,38 +197,7 @@ impl QuadRenderer {
             bind_group_layouts: &[Some(&uniform_layout), Some(&image_layout)],
             immediate_size: 0,
         });
-        let make = |blend: wgpu::BlendState| {
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("quad"),
-                layout: Some(&pipeline_layout),
-                vertex: wgpu::VertexState {
-                    module: &shader,
-                    entry_point: Some("vs_main"),
-                    compilation_options: Default::default(),
-                    buffers: &[Some(wgpu::VertexBufferLayout {
-                        array_stride: std::mem::size_of::<Vertex>() as u64,
-                        step_mode: wgpu::VertexStepMode::Vertex,
-                        attributes: &wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x2],
-                    })],
-                },
-                primitive: wgpu::PrimitiveState::default(),
-                depth_stencil: None,
-                multisample: wgpu::MultisampleState::default(),
-                fragment: Some(wgpu::FragmentState {
-                    module: &shader,
-                    entry_point: Some("fs_main"),
-                    compilation_options: Default::default(),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format: OUTPUT_FORMAT,
-                        blend: Some(blend),
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
-                }),
-                multiview_mask: None,
-                cache: None,
-            })
-        };
-        let pipelines = BlendMode::ALL.map(|mode| make(blend_state(mode)));
+        let pipelines = make_pipelines(device, &pipeline_layout, &shader);
         // Steep keystone angles squash the image along one axis; anisotropic
         // filtering keeps it sharp along the other.
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -212,10 +224,12 @@ impl QuadRenderer {
         );
         let blank = ImageBinding {
             bind_group: Self::image_bind_group(device, &image_layout, &sampler, &blank_image),
+            size: [1, 1],
         };
 
         Self {
             pipelines,
+            pipeline_layout,
             uniform_layout,
             image_layout,
             sampler,
@@ -245,9 +259,97 @@ impl QuadRenderer {
         })
     }
 
+    /// Compiles a surface's shader chain into pipelines. Errors (naming the
+    /// shader and its own line) instead of panics.
+    pub fn compile_chain(
+        &self,
+        device: &wgpu::Device,
+        chain: &[ChainShader<'_>],
+    ) -> Result<FilterPipelines, String> {
+        // Split where a shader wants its own pass (not before the first).
+        let mut parts: Vec<&[ChainShader<'_>]> = Vec::new();
+        let mut start = 0;
+        for i in 1..chain.len() {
+            if chain[i].own_pass {
+                parts.push(&chain[start..i]);
+                start = i;
+            }
+        }
+        parts.push(&chain[start..]);
+
+        let first = filter_first_line();
+        let mut offset = 0;
+        let mut modules = Vec::new();
+        for part in &parts {
+            let (body, lines) = crate::chain::compose(part, first, offset)?;
+            offset += part.iter().map(|s| s.params.len()).sum::<usize>();
+            let source = filter_shader_source(&body);
+            validate_filter(&source, &lines)?;
+            modules.push(device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("shader chain"),
+                source: wgpu::ShaderSource::Wgsl(source.into()),
+            }));
+        }
+        let last = modules.pop().expect("at least one part");
+        Ok(FilterPipelines {
+            pipelines: make_pipelines(device, &self.pipeline_layout, &last),
+            passes: modules
+                .iter()
+                .map(|m| make_pass_pipeline(device, &self.pipeline_layout, m))
+                .collect(),
+        })
+    }
+
+    /// Images for own-pass shaders on an input of `size` pixels.
+    pub fn pass_targets(&self, device: &wgpu::Device, size: [u32; 2]) -> PassTargets {
+        let max = device.limits().max_texture_dimension_2d;
+        let size = [size[0].clamp(1, max), size[1].clamp(1, max)];
+        let make = |label: &str| {
+            let texture = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some(label),
+                size: wgpu::Extent3d {
+                    width: size[0],
+                    height: size[1],
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: OUTPUT_FORMAT,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            });
+            let view = texture.create_view(&Default::default());
+            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("chain pass"),
+                layout: &self.image_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&self.sampler),
+                    },
+                ],
+            });
+            (view, ImageBinding { bind_group, size })
+        };
+        let (va, ba) = make("chain pass a");
+        let (vb, bb) = make("chain pass b");
+        PassTargets {
+            size,
+            bindings: [ba, bb],
+            views: [va, vb],
+        }
+    }
+
     pub fn bind_image(&self, device: &wgpu::Device, image: &GpuImage) -> ImageBinding {
         ImageBinding {
             bind_group: Self::image_bind_group(device, &self.image_layout, &self.sampler, image),
+            size: image.size,
         }
     }
 
@@ -336,6 +438,46 @@ impl QuadRenderer {
             usage: wgpu::BufferUsages::INDEX,
         });
 
+        // Own-pass shaders: earlier parts of a chain baked into images.
+        // (Uniforms are already queued above, so these passes see them.)
+        let mut baked: Vec<Option<&ImageBinding>> = Vec::with_capacity(draws.len());
+        for (quad, _, _) in &draws {
+            let (Some(filter), Some(targets), QuadFill::Image(image)) =
+                (quad.filter, quad.passes, quad.fill)
+            else {
+                baked.push(None);
+                continue;
+            };
+            if filter.passes.is_empty() {
+                baked.push(None);
+                continue;
+            }
+            let mut source = image;
+            for (i, pipeline) in filter.passes.iter().enumerate() {
+                let target = i % 2;
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("chain pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &targets.views[target],
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    ..Default::default()
+                });
+                pass.set_pipeline(pipeline);
+                pass.set_bind_group(0, &quad.state.bind_group, &[]);
+                pass.set_bind_group(1, &source.bind_group, &[]);
+                pass.draw(0..3, 0..1);
+                drop(pass);
+                source = &targets.bindings[target];
+            }
+            baked.push(Some(source));
+        }
+
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("surfaces"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -351,10 +493,16 @@ impl QuadRenderer {
         });
         pass.set_vertex_buffer(0, vertex_buffer.slice(..));
         pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-        for (quad, first, count) in draws {
-            pass.set_pipeline(&self.pipelines[blend_index(quad.blend)]);
-            let image = match quad.fill {
-                QuadFill::Image(binding) => binding,
+        for ((quad, first, count), baked) in draws.into_iter().zip(baked) {
+            // A chain that needs passes but has no images for them draws plain.
+            let filter = quad
+                .filter
+                .filter(|f| f.passes.is_empty() || baked.is_some());
+            let pipelines = filter.map_or(&self.pipelines, |f| &f.pipelines);
+            pass.set_pipeline(&pipelines[blend_index(quad.blend)]);
+            let image = match (baked, quad.fill) {
+                (Some(b), _) => b,
+                (None, QuadFill::Image(binding)) => binding,
                 _ => &self.blank,
             };
             pass.set_bind_group(0, &quad.state.bind_group, &[]);
@@ -362,6 +510,135 @@ impl QuadRenderer {
             pass.draw_indexed(first..first + count, 0, 0..1);
         }
     }
+}
+
+const QUAD_WGSL: &str = include_str!("shaders/quad.wgsl");
+const FILTER_BEGIN: &str = "// RUSTMAP_FILTER_BEGIN";
+const FILTER_END: &str = "// RUSTMAP_FILTER_END";
+
+/// The surface shader with its default `filter` replaced by `filter_source`.
+fn filter_shader_source(filter_source: &str) -> String {
+    let begin = QUAD_WGSL.find(FILTER_BEGIN).expect("filter marker");
+    let end = QUAD_WGSL.find(FILTER_END).expect("filter marker") + FILTER_END.len();
+    format!(
+        "{}{FILTER_BEGIN}\n{filter_source}\n{FILTER_END}{}",
+        &QUAD_WGSL[..begin],
+        &QUAD_WGSL[end..]
+    )
+}
+
+/// Line in the full shader where the composed chain starts.
+fn filter_first_line() -> usize {
+    QUAD_WGSL[..QUAD_WGSL.find(FILTER_BEGIN).expect("filter marker")]
+        .lines()
+        .count()
+        + 2
+}
+
+/// Parses and validates a composed shader with naga, so a broken file
+/// gives a message instead of a GPU validation panic.
+fn validate_filter(source: &str, lines: &crate::chain::LineMap) -> Result<(), String> {
+    use wgpu::naga;
+    let at = |line: u32| lines.describe(line as usize);
+    let module = naga::front::wgsl::parse_str(source).map_err(|e| {
+        let place = e
+            .location(source)
+            .map(|l| at(l.line_number))
+            .unwrap_or_default();
+        format!("{place}: {}", e.message())
+    })?;
+    naga::valid::Validator::new(
+        naga::valid::ValidationFlags::all(),
+        naga::valid::Capabilities::default(),
+    )
+    .validate(&module)
+    .map_err(|e| {
+        let place = e
+            .spans()
+            .next()
+            .map(|(span, _)| at(span.location(source).line_number))
+            .unwrap_or_default();
+        let mut msg = e.as_inner().to_string();
+        let mut cause = std::error::Error::source(e.as_inner());
+        while let Some(c) = cause {
+            msg = format!("{msg}: {c}");
+            cause = c.source();
+        }
+        format!("{place}: {msg}")
+    })?;
+    Ok(())
+}
+
+/// A pass pipeline: the full-frame `vs_pass` / `fs_pass` of a chain part,
+/// replacing what is in the target.
+fn make_pass_pipeline(
+    device: &wgpu::Device,
+    layout: &wgpu::PipelineLayout,
+    shader: &wgpu::ShaderModule,
+) -> wgpu::RenderPipeline {
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("chain pass"),
+        layout: Some(layout),
+        vertex: wgpu::VertexState {
+            module: shader,
+            entry_point: Some("vs_pass"),
+            compilation_options: Default::default(),
+            buffers: &[],
+        },
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        fragment: Some(wgpu::FragmentState {
+            module: shader,
+            entry_point: Some("fs_pass"),
+            compilation_options: Default::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: OUTPUT_FORMAT,
+                blend: None,
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        multiview_mask: None,
+        cache: None,
+    })
+}
+
+fn make_pipelines(
+    device: &wgpu::Device,
+    layout: &wgpu::PipelineLayout,
+    shader: &wgpu::ShaderModule,
+) -> [wgpu::RenderPipeline; 4] {
+    BlendMode::ALL.map(|mode| {
+        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("quad"),
+            layout: Some(layout),
+            vertex: wgpu::VertexState {
+                module: shader,
+                entry_point: Some("vs_main"),
+                compilation_options: Default::default(),
+                buffers: &[Some(wgpu::VertexBufferLayout {
+                    array_stride: std::mem::size_of::<Vertex>() as u64,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x2],
+                })],
+            },
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: shader,
+                entry_point: Some("fs_main"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: OUTPUT_FORMAT,
+                    blend: Some(blend_state(mode)),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        })
+    })
 }
 
 fn uniforms(quad: &QuadDraw<'_>) -> Uniforms {
@@ -388,7 +665,10 @@ fn uniforms(quad: &QuadDraw<'_>) -> Uniforms {
         }
         _ => (0, 0.0, 0),
     };
-    let c = quad.color;
+    let mut params = [[0.0; 4]; MAX_CHAIN_PARAMS / 4];
+    for (i, v) in quad.params.iter().enumerate() {
+        params[i / 4][i % 4] = *v;
+    }
     Uniforms {
         opacity: quad.opacity.clamp(0.0, 1.0),
         fill,
@@ -400,12 +680,9 @@ fn uniforms(quad: &QuadDraw<'_>) -> Uniforms {
         mask_count,
         mask_feather,
         mask_invert,
-        brightness: c.brightness,
-        contrast: c.contrast,
-        saturation: c.saturation,
-        hue: c.hue.to_radians(),
-        _pad: [0.0; 2],
-        gain: [c.gain[0], c.gain[1], c.gain[2], 1.0],
+        time: quad.time,
+        _pad: 0.0,
+        params,
         input: [
             m.x_axis.extend(0.0).to_array(),
             m.y_axis.extend(0.0).to_array(),

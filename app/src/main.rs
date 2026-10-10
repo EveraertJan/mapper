@@ -12,6 +12,7 @@ mod media;
 mod monitors;
 mod osc;
 mod output_window;
+mod shaders;
 
 use tracing_subscriber::EnvFilter;
 

@@ -50,6 +50,7 @@ jobs:
           NAME=RUSTMAP-$VERSION-linux-x86_64
           mkdir -p dist/$NAME
           cp target/release/rustmap README.md LICENSE dist/$NAME/
+          cp -R assets/shaders dist/$NAME/shaders
           cat > dist/$NAME/RUNNING.txt <<'TXT'
           RUSTMAP for Linux (x86_64), built on Ubuntu 24.04.
 
@@ -89,6 +90,7 @@ jobs:
           $name = "RUSTMAP-$version-windows-x86_64"
           New-Item -ItemType Directory -Force "dist\$name" | Out-Null
           Copy-Item target\release\rustmap.exe, README.md, LICENSE "dist\$name\"
+          Copy-Item -Recurse assets\shaders "dist\$name\shaders"
           # FFmpeg DLLs next to the exe, with FFmpeg's license.
           Copy-Item "$env:FFMPEG_DIR\bin\*.dll" "dist\$name\"
           New-Item -ItemType Directory -Force "dist\$name\ffmpeg-license" | Out-Null

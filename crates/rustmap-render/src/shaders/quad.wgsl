@@ -12,12 +12,10 @@ struct Surface {
     mask_count: u32,    // 0 = no mask, else polygon points used
     mask_feather: f32,  // soft edge width in surface uv units
     mask_invert: u32,
-    brightness: f32,
-    contrast: f32,
-    saturation: f32,
-    hue: f32,           // radians
-    _pad: vec2<f32>,
-    gain: vec4<f32>,
+    time: f32,          // seconds, for shader filters
+    _pad: f32,
+    // Shader filter parameters of the whole chain, four per vec4.
+    params: array<vec4<f32>, 8>,
     // Homography from surface uv to media uv (input region), as matrix columns.
     input: array<vec4<f32>, 3>,
     // Mask polygon in surface uv, two points per vec4.
@@ -118,23 +116,39 @@ fn mask_coverage(uv: vec2<f32>) -> f32 {
     return select(cov, 1.0 - cov, q.mask_invert != 0u);
 }
 
-// Gain, brightness, contrast, saturation and hue on a straight (not
-// premultiplied) color.
-fn adjust(c: vec3<f32>) -> vec3<f32> {
-    var rgb = c * q.gain.rgb;
-    rgb = rgb + vec3<f32>(q.brightness);
-    rgb = (rgb - vec3<f32>(0.5)) * q.contrast + vec3<f32>(0.5);
-    let luma = dot(rgb, vec3<f32>(0.2126, 0.7152, 0.0722));
-    rgb = mix(vec3<f32>(luma), rgb, q.saturation);
-    if (q.hue != 0.0) {
-        // Rotate around the gray axis (Rodrigues).
-        let k = vec3<f32>(0.57735);
-        let cs = cos(q.hue);
-        let sn = sin(q.hue);
-        rgb = rgb * cs + cross(k, rgb) * sn + k * dot(k, rgb) * (1.0 - cs);
-    }
-    return clamp(rgb, vec3<f32>(0.0), vec3<f32>(1.0));
+// ---- for shader filters ----
+
+// Seconds since RUSTMAP started.
+fn rm_time() -> f32 {
+    return q.time;
 }
+
+// Parameter `n` of the whole chain (each shader gets its own `rm_param`
+// and `p_<name>` accessors that add their offset).
+fn rm_p(n: u32) -> f32 {
+    let i = min(n, 31u);
+    return q.params[i / 4u][i % 4u];
+}
+
+// The input at media uv `uv` (straight alpha). Safe anywhere in a filter.
+fn rm_sample(uv: vec2<f32>) -> vec4<f32> {
+    let c = textureSampleLevel(tex, samp, uv, 0.0);
+    if (c.a > 0.0) {
+        return vec4<f32>(c.rgb / c.a, c.a);
+    }
+    return vec4<f32>(0.0);
+}
+
+// Size of the input in pixels.
+fn rm_size() -> vec2<f32> {
+    return vec2<f32>(textureDimensions(tex, 0));
+}
+
+// RUSTMAP_FILTER_BEGIN
+fn effect(color: vec4<f32>, uv: vec2<f32>, src_uv: vec2<f32>) -> vec4<f32> {
+    return color;
+}
+// RUSTMAP_FILTER_END
 
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
@@ -151,9 +165,41 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         case 2u: { color = vec4<f32>(in.uv, 0.0, 1.0); }
         default: { color = image; }  // premultiplied
     }
-    // Color correction works on straight alpha; colors here are premultiplied.
+    // Shader filters work on straight alpha; colors here are premultiplied.
+    var straight = vec4<f32>(0.0);
     if (color.a > 0.0) {
-        color = vec4<f32>(adjust(color.rgb / color.a) * color.a, color.a);
+        straight = vec4<f32>(color.rgb / color.a, color.a);
     }
+    if (q.fill == 0u) {
+        straight = effect(straight, in.uv, src_uv);
+    }
+    let a = clamp(straight.a, 0.0, 1.0);
+    color = vec4<f32>(clamp(straight.rgb, vec3<f32>(0.0), vec3<f32>(1.0)) * a, a);
     return color * (q.opacity * mask);
+}
+
+// ---- own-pass shaders ----
+// A shader marked "own pass" sees everything above it baked into an image:
+// those shaders run here, as one full-frame triangle in input space
+// (uv = src_uv), into an image the size of the input.
+
+struct PassOut {
+    @builtin(position) pos: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+};
+
+@vertex
+fn vs_pass(@builtin(vertex_index) i: u32) -> PassOut {
+    let p = vec2<f32>(f32((i << 1u) & 2u), f32(i & 2u));
+    var out: PassOut;
+    out.pos = vec4<f32>(p.x * 2.0 - 1.0, 1.0 - p.y * 2.0, 0.0, 1.0);
+    out.uv = p;
+    return out;
+}
+
+@fragment
+fn fs_pass(in: PassOut) -> @location(0) vec4<f32> {
+    let r = effect(rm_sample(in.uv), in.uv, in.uv);
+    let a = clamp(r.a, 0.0, 1.0);
+    return vec4<f32>(clamp(r.rgb, vec3<f32>(0.0), vec3<f32>(1.0)) * a, a);
 }

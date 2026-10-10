@@ -95,6 +95,11 @@ pub struct SurfaceLook {
     pub visible: bool,
     pub opacity: f32,
     pub blend: BlendMode,
+    /// The shader chain.
+    #[serde(default)]
+    pub filters: Vec<crate::shaders::FilterUse>,
+    /// Cues saved before color became a shader; migrated on load.
+    #[serde(default, skip_serializing)]
     pub color: ColorAdjust,
     pub media: Option<MediaId>,
     pub shape: Shape,
@@ -110,7 +115,8 @@ impl SurfaceLook {
             visible: s.visible,
             opacity: s.opacity,
             blend: s.blend,
-            color: s.color,
+            filters: s.filters.clone(),
+            color: ColorAdjust::default(),
             media: s.media,
             shape: s.shape,
             corners: s.corners,
@@ -234,20 +240,14 @@ fn fades(kind: ChannelKind) -> bool {
         )
 }
 
-/// Surface numbers that fade, flattened: opacity, color, and with geometry
-/// the corners, input region, mesh points and mask points.
-fn surface_floats(s: &Surface, geometry: bool) -> Vec<f32> {
-    let c = &s.color;
-    let mut v = vec![
-        s.opacity,
-        c.brightness,
-        c.contrast,
-        c.saturation,
-        c.hue,
-        c.gain[0],
-        c.gain[1],
-        c.gain[2],
-    ];
+/// Surface numbers that fade, flattened: opacity, with `filters` every
+/// shader parameter, and with `geometry` the corners, input region, mesh
+/// points and mask points.
+fn surface_floats(s: &Surface, filters: bool, geometry: bool) -> Vec<f32> {
+    let mut v = vec![s.opacity];
+    if filters {
+        v.extend(s.filters.iter().flat_map(|f| f.params.iter().copied()));
+    }
     if geometry {
         v.extend(s.corners.iter().flatten());
         v.extend(s.input.iter().flatten());
@@ -263,16 +263,14 @@ fn surface_floats(s: &Surface, geometry: bool) -> Vec<f32> {
 }
 
 /// Writes [`surface_floats`] back (same layout).
-fn set_surface_floats(s: &mut Surface, geometry: bool, v: &[f32]) {
+fn set_surface_floats(s: &mut Surface, filters: bool, geometry: bool, v: &[f32]) {
     let mut it = v.iter().copied();
     let mut next = || it.next().unwrap_or_default();
     s.opacity = next();
-    s.color.brightness = next();
-    s.color.contrast = next();
-    s.color.saturation = next();
-    s.color.hue = next();
-    for g in &mut s.color.gain {
-        *g = next();
+    if filters {
+        for p in s.filters.iter_mut().flat_map(|f| f.params.iter_mut()) {
+            *p = next();
+        }
     }
     if geometry {
         for p in s.corners.iter_mut().chain(s.input.iter_mut()) {
@@ -292,6 +290,18 @@ fn set_surface_floats(s: &mut Surface, geometry: bool, v: &[f32]) {
     }
 }
 
+/// Whether two chains have the same shaders in the same order (with the
+/// same number of values), so their parameters can be blended.
+fn same_chain(a: &Surface, b: &Surface) -> bool {
+    a.filters.len() == b.filters.len()
+        && a.filters.iter().zip(&b.filters).all(|(x, y)| {
+            x.shader == y.shader
+                && x.enabled == y.enabled
+                && x.own_pass == y.own_pass
+                && x.params.len() == y.params.len()
+        })
+}
+
 /// Whether two surfaces' geometry has the same structure, so it can be
 /// blended point by point.
 fn same_structure(a: &Surface, b: &Surface) -> bool {
@@ -309,6 +319,7 @@ fn same_structure(a: &Surface, b: &Surface) -> bool {
 }
 
 struct SurfaceFade {
+    filters: bool,
     geometry: bool,
     from: Vec<f32>,
     to: Vec<f32>,
@@ -389,7 +400,7 @@ impl CuePlayer {
                     target.visible = look.visible;
                     target.opacity = look.opacity;
                     target.blend = look.blend;
-                    target.color = look.color;
+                    target.filters.clone_from(&look.filters);
                     if media_ok {
                         target.media = look.media;
                     }
@@ -425,6 +436,11 @@ impl CuePlayer {
                 // Switches happen at the start of the fade.
                 s.blend = target.blend;
                 s.media = target.media;
+                // A different chain switches; the same chain fades its values.
+                let filters = same_chain(s, &target);
+                if !filters {
+                    s.filters.clone_from(&target.filters);
+                }
                 // Visibility fades through opacity.
                 let shown = |x: &Surface| if x.visible { x.opacity } else { 0.0 };
                 let hide_with = (!target.visible).then_some(target.opacity);
@@ -432,8 +448,8 @@ impl CuePlayer {
                 s.visible = s.visible || target.visible;
                 s.opacity = from_opacity;
                 target.opacity = shown(&target);
-                let from = surface_floats(s, geometry);
-                let to = surface_floats(&target, geometry);
+                let from = surface_floats(s, filters, geometry);
+                let to = surface_floats(&target, filters, geometry);
                 if from == to {
                     if let Some(o) = hide_with {
                         s.visible = false;
@@ -444,6 +460,7 @@ impl CuePlayer {
                 surfaces.insert(
                     *id,
                     SurfaceFade {
+                        filters,
                         geometry,
                         last: from.clone(),
                         from,
@@ -562,7 +579,7 @@ impl CuePlayer {
             let Some(s) = project.surface_mut(*id) else {
                 return false;
             };
-            if surface_floats(s, f.geometry) != f.last {
+            if surface_floats(s, f.filters, f.geometry) != f.last {
                 return false; // edited mid-fade: leave it there
             }
             let v: Vec<f32> = f
@@ -571,8 +588,8 @@ impl CuePlayer {
                 .zip(&f.to)
                 .map(|(a, b)| a + (b - a) * t)
                 .collect();
-            set_surface_floats(s, f.geometry, &v);
-            f.last = surface_floats(s, f.geometry);
+            set_surface_floats(s, f.filters, f.geometry, &v);
+            f.last = surface_floats(s, f.filters, f.geometry);
             if t < 1.0 {
                 return true;
             }
@@ -765,7 +782,12 @@ mod tests {
         {
             let x = p.surface_mut(s).unwrap();
             x.opacity = 0.2;
-            x.color.brightness = 0.4;
+            x.filters = vec![crate::FilterUse {
+                shader: "color".into(),
+                enabled: true,
+                own_pass: false,
+                params: vec![0.4],
+            }];
             x.media = Some(b);
             x.blend = BlendMode::Add;
         }
@@ -774,7 +796,7 @@ mod tests {
         {
             let x = p.surface_mut(s).unwrap();
             x.opacity = 1.0;
-            x.color.brightness = 0.0;
+            x.filters[0].params[0] = 0.0;
             x.media = Some(a);
             x.blend = BlendMode::Normal;
         }
@@ -787,7 +809,7 @@ mod tests {
         player.tick(&mut p, 1.0);
         let x = p.surface(s).unwrap();
         assert!((x.opacity - 0.6).abs() < 1e-5);
-        assert!((x.color.brightness - 0.2).abs() < 1e-5);
+        assert!((x.filters[0].params[0] - 0.2).abs() < 1e-5);
         player.tick(&mut p, 2.0);
         assert!((p.surface(s).unwrap().opacity - 0.2).abs() < 1e-5);
         assert!(!player.fading());

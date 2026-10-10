@@ -73,6 +73,9 @@ struct Graphics {
     overlay: OverlayRenderer,
     media: MediaManager,
     quad_states: HashMap<SurfaceId, QuadState>,
+    shaders: crate::shaders::ShaderLibrary,
+    /// Images for surfaces whose shader chain has own passes.
+    pass_targets: HashMap<SurfaceId, rustmap_render::PassTargets>,
     control: ControlWindow,
     outputs: BTreeMap<OutputId, OutputRuntime>,
     previews: HashMap<OutputId, egui::TextureId>,
@@ -159,6 +162,8 @@ impl App {
             overlay: OverlayRenderer::new(&gpu.device),
             media: MediaManager::default(),
             quad_states: HashMap::new(),
+            shaders: crate::shaders::ShaderLibrary::default(),
+            pass_targets: HashMap::new(),
             gpu,
             control,
             outputs: BTreeMap::new(),
@@ -273,6 +278,46 @@ impl App {
     }
 
     /// Saves a DMX fixture type to a file (defaults to the user's fixture library folder).
+    /// Shader library actions from the Filters column.
+    fn shader_action(&mut self, action: UiAction) {
+        let Some(gfx) = &mut self.gfx else { return };
+        let lib = &mut gfx.shaders;
+        let result = match action {
+            UiAction::AddShaderFile => {
+                let mut dialog = rfd::FileDialog::new()
+                    .set_title("Add a shader to your library")
+                    .add_filter("WGSL shader", &["wgsl"]);
+                if let Some(dir) = dirs::home_dir() {
+                    dialog = dialog.set_directory(dir);
+                }
+                match dialog.pick_file() {
+                    Some(path) => lib.add_file(&path).map(|_| ()),
+                    None => Ok(()),
+                }
+            }
+            UiAction::NewShader => lib.create().map(|path| crate::shaders::reveal(&path)),
+            UiAction::OpenShaderFolder => {
+                let dir = lib.dir().to_path_buf();
+                let _ = std::fs::create_dir_all(&dir);
+                crate::shaders::reveal(&dir);
+                Ok(())
+            }
+            UiAction::OpenShader(path) => {
+                crate::shaders::reveal(&path);
+                Ok(())
+            }
+            UiAction::RemoveShader(id) => lib.remove(&id),
+            UiAction::KeepShader(id) => match lib.source(&id).map(str::to_owned) {
+                Some(src) => lib.write(&id, &src).map(|_| ()),
+                None => Ok(()),
+            },
+            _ => Ok(()),
+        };
+        if let Err(err) = result {
+            show_error("Shader library", &err);
+        }
+    }
+
     fn export_dmx_type(&mut self, id: rustmap_core::DmxTypeId) {
         let Some(ty) = self.project.dmx_type(id) else {
             return;
@@ -416,6 +461,12 @@ impl App {
             UiAction::ImportImages { assign_to } => self.pick_images(assign_to),
             UiAction::ImportDmxTypes => self.import_dmx_types(),
             UiAction::ExportDmxType(id) => self.export_dmx_type(id),
+            a @ (UiAction::AddShaderFile
+            | UiAction::NewShader
+            | UiAction::OpenShaderFolder
+            | UiAction::OpenShader(_)
+            | UiAction::RemoveShader(_)
+            | UiAction::KeepShader(_)) => self.shader_action(a),
             UiAction::GoCue(id) => {
                 let now = self.start.elapsed().as_secs_f64();
                 self.led.go(&mut self.project, id, now);
@@ -747,6 +798,8 @@ impl App {
                 dmx: &self.led.view,
                 osc: &self.osc.view,
                 video: &gfx.media.video_times,
+                shaders: &gfx.shaders.entries,
+                shader_errors: &gfx.shaders.surface_errors,
                 stats: &self.stats,
                 adapter: &adapter,
                 profiler_enabled: self.profiler.is_some(),
@@ -789,6 +842,29 @@ impl App {
         // 3. Render.
         let Some(gfx) = &mut self.gfx else { return };
         let time = self.start.elapsed().as_secs_f32();
+        gfx.shaders
+            .prepare(&gfx.quads, &gfx.gpu.device, &mut self.project);
+        // Images for own-pass shader chains, at their input's size.
+        let mut needed = Vec::new();
+        for s in self.project.surfaces.iter().filter(|s| s.visible) {
+            let Some((chain, _)) = gfx.shaders.chain(s.id) else {
+                continue;
+            };
+            let Some(binding) = s.media.and_then(|m| gfx.media.binding(m)) else {
+                continue;
+            };
+            if chain.pass_count() > 0 {
+                needed.push((s.id, binding.size));
+            }
+        }
+        gfx.pass_targets
+            .retain(|id, _| needed.iter().any(|(n, _)| n == id));
+        for (id, size) in needed {
+            if gfx.pass_targets.get(&id).is_none_or(|t| t.size() != size) {
+                gfx.pass_targets
+                    .insert(id, gfx.quads.pass_targets(&gfx.gpu.device, size));
+            }
+        }
         let mut encoder = gfx
             .gpu
             .device
@@ -829,6 +905,7 @@ impl App {
                         Some(binding) => QuadFill::Image(binding),
                         None => QuadFill::Checker,
                     };
+                    let chain = gfx.shaders.chain(s.id);
                     Some(QuadDraw {
                         state: gfx.quad_states.get(&s.id)?,
                         corners: rustmap_geom::quad_from_arrays(&s.corners),
@@ -839,7 +916,11 @@ impl App {
                         shape: s.shape,
                         input: rustmap_geom::quad_from_arrays(&s.input),
                         mask: s.mask.as_ref(),
-                        color: s.color,
+                        filter: chain.map(|c| c.0),
+                        passes: gfx.pass_targets.get(&s.id),
+                        params: chain
+                            .map_or([0.0; rustmap_core::shaders::MAX_CHAIN_PARAMS], |c| c.1),
+                        time,
                     })
                 })
                 .collect();

@@ -42,7 +42,12 @@ pub struct Surface {
     /// Polygon mask in surface space, so it follows any warp.
     #[serde(default)]
     pub mask: Option<Mask>,
+    /// Shaders applied to the picture, in order.
     #[serde(default)]
+    pub filters: Vec<crate::shaders::FilterUse>,
+    /// Color adjustment of shows saved before color became a shader; turned
+    /// into `filters` on load and never saved.
+    #[serde(default, skip_serializing)]
     pub color: ColorAdjust,
 }
 
@@ -111,6 +116,8 @@ pub struct ColorAdjust {
     pub hue: f32,
     /// Per-channel multiplier, e.g. to match projectors.
     pub gain: [f32; 3],
+    /// Bits per color channel after posterizing (1..=8); 0 = off.
+    pub posterize: u8,
 }
 
 impl Default for ColorAdjust {
@@ -121,6 +128,7 @@ impl Default for ColorAdjust {
             saturation: 1.0,
             hue: 0.0,
             gain: [1.0; 3],
+            posterize: 0,
         }
     }
 }
@@ -222,6 +230,7 @@ impl Surface {
             input: Self::FULL,
             mesh: None,
             mask: None,
+            filters: Vec::new(),
             color: ColorAdjust::default(),
         }
     }

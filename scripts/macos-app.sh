@@ -34,6 +34,7 @@ for s in 16 32 128 256 512; do
     sips -z $((s * 2)) $((s * 2)) assets/icon.png --out "$ICONSET/icon_${s}x${s}@2x.png" >/dev/null
 done
 iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/RUSTMAP.icns"
+cp -R assets/shaders "$APP/Contents/Resources/shaders"
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

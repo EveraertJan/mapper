@@ -61,13 +61,27 @@ pub(crate) fn list(
                 }
             }
             ui.vertical(|ui| {
-                ui.label(&media.name).on_hover_text(media.origin());
+                let selected = state.selected_media == Some(media.id);
+                if ui
+                    .selectable_label(selected, egui::RichText::new(&media.name).strong())
+                    .on_hover_text(format!(
+                        "{}\nClick to map it in column 2",
+                        media.origin()
+                    ))
+                    .clicked()
+                {
+                    state.selected_media = Some(media.id);
+                }
                 match status {
                     Some(MediaStatus::Failed(err)) => {
+                        let missing = media.path().is_some_and(|p| !p.exists());
                         ui.horizontal(|ui| {
-                            ui.colored_label(egui::Color32::from_rgb(235, 90, 70), "Missing")
-                                .on_hover_text(err);
-                            if media.path().is_some()
+                            ui.colored_label(
+                                egui::Color32::from_rgb(235, 90, 70),
+                                if missing { "Missing" } else { "Can't open" },
+                            )
+                            .on_hover_text(err);
+                            if missing
                                 && ui
                                     .small_button("Relink…")
                                     .on_hover_text("Pick the file; other missing files in that folder are found too")
@@ -88,9 +102,16 @@ pub(crate) fn list(
                     }
                     _ => {}
                 }
+                // Quick play / pause; the full transport is in Filters.
                 if let MediaSource::Video { playback, .. } = &media.source {
-                    let time = view.video.get(&media.id).copied().unwrap_or_default();
-                    if let Some(new) = transport(ui, media.id, *playback, time, actions) {
+                    let mut new = *playback;
+                    let label = if playback.paused { "Play" } else { "Pause" };
+                    if ui
+                        .small_button(label)
+                        .on_hover_text("Loop, speed and scrubbing: Filters (column 3)")
+                        .clicked()
+                    {
+                        new.paused = !new.paused;
                         playback_edits.push((media.id, new));
                     }
                 }
@@ -167,6 +188,28 @@ pub(crate) fn ndi_menu(
                 }
             }
         }
+    }
+}
+
+/// The full transport of a video (for the Filters column).
+pub(crate) fn video_controls(
+    ui: &mut egui::Ui,
+    project: &mut Project,
+    id: MediaId,
+    view: &ViewData<'_>,
+    actions: &mut Vec<UiAction>,
+) {
+    let Some(MediaSource::Video { playback, .. }) = project
+        .media
+        .iter_mut()
+        .find(|m| m.id == id)
+        .map(|m| &mut m.source)
+    else {
+        return;
+    };
+    let time = view.video.get(&id).copied().unwrap_or_default();
+    if let Some(new) = transport(ui, id, *playback, time, actions) {
+        *playback = new;
     }
 }
 

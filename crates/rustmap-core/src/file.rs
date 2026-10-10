@@ -43,6 +43,27 @@ struct ShowFile {
     project: Project,
 }
 
+/// Shows saved before color became a shader: their color adjustments turn
+/// into a shader chain (on surfaces and in cues).
+pub fn migrate(p: &mut Project) {
+    for s in &mut p.surfaces {
+        if !s.color.is_identity() {
+            let mut chain = crate::shaders::chain_from_color(&s.color);
+            chain.append(&mut s.filters);
+            s.filters = chain;
+            s.color = Default::default();
+        }
+    }
+    for look in p.cues.iter_mut().flat_map(|c| c.surfaces.values_mut()) {
+        if !look.color.is_identity() {
+            let mut chain = crate::shaders::chain_from_color(&look.color);
+            chain.append(&mut look.filters);
+            look.filters = chain;
+            look.color = Default::default();
+        }
+    }
+}
+
 /// Saves `project` to `path` atomically.
 pub fn save(project: &Project, path: &Path) -> Result<(), FileError> {
     let base = path.parent().unwrap_or(Path::new("."));
@@ -97,6 +118,7 @@ pub fn load(path: &Path) -> Result<Project, FileError> {
             *p = normalize(&base.join(&*p));
         }
     }
+    migrate(&mut project);
     Ok(project)
 }
 
@@ -236,6 +258,14 @@ mod tests {
         p.add_ndi("STUDIO (Resolume)");
         p.surface_mut(s).unwrap().media = Some(m);
         p.surface_mut(s).unwrap().corners[2] = [0.91, 0.87];
+        p.surface_mut(s).unwrap().filters = vec![crate::FilterUse {
+            shader: "posterize".into(),
+            enabled: true,
+            own_pass: false,
+            params: vec![3.0],
+        }];
+        p.shader_sources
+            .insert("mine".into(), "fn effect() {}".into());
         p.add_fixture(o, crate::Fixture::default_strip());
         let f = p.add_fixture(o, crate::Fixture::default_matrix()).unwrap();
         p.fixture_mut(f).unwrap().patch.protocol = crate::Protocol::Sacn;
@@ -336,5 +366,42 @@ mod tests {
             .map(|e| e.unwrap().file_name())
             .collect();
         assert_eq!(names, vec![std::ffi::OsString::from("show.rustmap")]);
+    }
+
+    #[test]
+    fn old_color_adjustments_load_as_shaders() {
+        // A surface as an older version wrote it: `color`, no `filters`.
+        let mut p = Project::default();
+        let o = p.add_output();
+        let s = p.add_surface(o).unwrap();
+        p.surface_mut(s).unwrap().color.hue = 90.0;
+        let cue = p.record_cue(None);
+        p.cue_mut(cue)
+            .unwrap()
+            .surfaces
+            .get_mut(&s)
+            .unwrap()
+            .color
+            .contrast = 2.0;
+        migrate(&mut p);
+        let f = &p.surface(s).unwrap().filters;
+        assert_eq!(f.len(), 1);
+        assert_eq!(f[0].shader, "color");
+        assert_eq!(f[0].params[3], 90.0);
+        assert!(p.surface(s).unwrap().color.is_identity());
+        let look = &p.cue(cue).unwrap().surfaces[&s];
+        assert_eq!(look.filters[0].params[1], 2.0);
+    }
+
+    #[test]
+    fn column_layout_is_saved() {
+        let dir = temp_dir("layout");
+        let file = dir.join("show.rustmap");
+        let mut p = Project::default();
+        p.layout.collapsed[0] = true;
+        p.layout.widths[3] = 300.0;
+        p.layout.cues_open = false;
+        save(&p, &file).unwrap();
+        assert_eq!(load(&file).unwrap().layout, p.layout);
     }
 }

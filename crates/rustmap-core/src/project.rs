@@ -29,6 +29,30 @@ impl Default for OscSettings {
     }
 }
 
+/// How the control window's columns are arranged; saved with the show, but
+/// not an edit (no undo step).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Layout {
+    /// Per column (inputs, input mapping, filters, outputs, output mapping):
+    /// folded to its title strip.
+    pub collapsed: [bool; 5],
+    /// Column widths in points (0 = automatic).
+    pub widths: [f32; 5],
+    /// The cue list is open (collapsed: just its button row).
+    pub cues_open: bool,
+}
+
+impl Default for Layout {
+    fn default() -> Self {
+        Self {
+            collapsed: [false, false, true, false, false],
+            widths: [0.0; 5],
+            cues_open: true,
+        }
+    }
+}
+
 /// The whole show.
 ///
 /// Ids are handed out by counters and never reused, so a removed item can be
@@ -57,6 +81,11 @@ pub struct Project {
     pub cues: Vec<Cue>,
     /// OSC remote control.
     pub osc: OscSettings,
+    /// Sources of the custom shaders this show uses (filled in on save), so
+    /// it opens the same on a machine whose library lacks them.
+    pub shader_sources: BTreeMap<String, String>,
+    /// Column layout of the control window.
+    pub layout: Layout,
     next_output_id: u32,
     next_media_id: u32,
     next_surface_id: u32,
@@ -82,6 +111,8 @@ impl Default for Project {
             dmx_groups: Vec::new(),
             cues: Vec::new(),
             osc: OscSettings::default(),
+            shader_sources: BTreeMap::new(),
+            layout: Layout::default(),
             next_output_id: 1,
             next_media_id: 1,
             next_surface_id: 1,

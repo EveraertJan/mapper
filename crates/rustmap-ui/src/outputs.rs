@@ -14,7 +14,7 @@ const RESOLUTION_PRESETS: &[(&str, [u32; 2])] = &[
 
 pub(crate) fn list(ui: &mut egui::Ui, project: &mut Project, state: &mut UiState) {
     ui.horizontal(|ui| {
-        ui.strong("OUTPUTS");
+        ui.strong("PROJECTORS");
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if ui.button("+").on_hover_text("Add output").clicked() {
                 state.selected = Some(project.add_output());
