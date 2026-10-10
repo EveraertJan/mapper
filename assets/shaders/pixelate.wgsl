@@ -1,7 +1,9 @@
-// Big pixels. A: pixel size (1 to 64 input pixels).
+// @name Pixelate
+// @description Big pixels.
+// @param size "Pixel size" 1 64 8 step=1
+
 fn effect(color: vec4<f32>, uv: vec2<f32>, src_uv: vec2<f32>) -> vec4<f32> {
-    let size = mix(1.0, 64.0, rm_param(0u));
-    let cells = rm_size() / size;
+    let cells = rm_size() / max(p_size(), 1.0);
     let center = (floor(src_uv * cells) + vec2<f32>(0.5)) / cells;
     return rm_sample(center);
 }

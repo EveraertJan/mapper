@@ -1,7 +1,7 @@
 //! Headless GPU tests for perspective-correct quad rendering.
 //! Skipped (passes with a note) on machines without any GPU adapter.
 
-use rustmap_core::{BlendMode, ColorAdjust, EdgeBlend, Mask, Shape, TestPattern};
+use rustmap_core::{BlendMode, EdgeBlend, Mask, Shape, TestPattern};
 use rustmap_geom::{MeshGrid, Quad, Vec2, project, square_to_quad};
 use rustmap_media::ImageData;
 use rustmap_render::{
@@ -11,15 +11,39 @@ use rustmap_render::{
 
 const SIZE: u32 = 512;
 
+/// A built-in shader's source.
+fn builtin(id: &str) -> (String, String) {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../assets/shaders")
+        .join(format!("{id}.wgsl"));
+    (id.to_owned(), std::fs::read_to_string(path).unwrap())
+}
+
+/// Chain entries with their declared parameter names.
+fn chain(shaders: &[(String, String)]) -> Vec<rustmap_render::ChainShader<'_>> {
+    shaders
+        .iter()
+        .map(|(id, src)| rustmap_render::ChainShader {
+            id,
+            source: src,
+            params: rustmap_core::shaders::parse_header(id, src)
+                .unwrap()
+                .params
+                .into_iter()
+                .map(|p| p.id)
+                .collect(),
+        })
+        .collect()
+}
+
 #[derive(Default)]
 struct ExtraM5 {
     mesh: Option<MeshGrid>,
     mask: Option<Mask>,
-    color: ColorAdjust,
     edge_blend: Option<EdgeBlend>,
-    /// WGSL shader filter source.
-    filter: Option<String>,
-    params: [f32; 4],
+    /// Shader chain: (id, WGSL source).
+    chain: Vec<(String, String)>,
+    params: Vec<f32>,
 }
 
 struct Extra {
@@ -86,11 +110,13 @@ impl Ctx {
         let target = OutputTarget::new(device, [SIZE, SIZE], "test");
         let pattern = self.patterns.create_state(device);
         let state = self.quads.create_state(device);
-        let filter = extra.m5.filter.as_ref().map(|src| {
+        let filter = (!extra.m5.chain.is_empty()).then(|| {
             self.quads
-                .compile_filter(device, src)
-                .expect("test filter compiles")
+                .compile_chain(device, &chain(&extra.m5.chain))
+                .expect("test chain compiles")
         });
+        let mut params = [0.0; rustmap_core::shaders::MAX_CHAIN_PARAMS];
+        params[..extra.m5.params.len()].copy_from_slice(&extra.m5.params);
         let mut encoder = device.create_command_encoder(&Default::default());
         self.patterns.render(
             &self.gpu.queue,
@@ -119,9 +145,8 @@ impl Ctx {
                 shape: extra.shape,
                 input: extra.input,
                 mask: extra.m5.mask.as_ref(),
-                color: extra.m5.color,
                 filter: filter.as_ref(),
-                params: extra.m5.params,
+                params,
                 time: 0.0,
             }],
         );
@@ -501,47 +526,37 @@ fn mask_cuts_and_inverts() {
 }
 
 #[test]
-fn color_adjust() {
+fn color_shader() {
     let Some(ctx) = ctx() else { return };
     let rgba = image::RgbaImage::from_pixel(1, 1, image::Rgba([200, 100, 50, 255]));
     let data = ImageData::from_rgba(rgba, 16);
     let img = GpuImage::upload(&ctx.gpu.device, &ctx.gpu.queue, &data, "c");
     let b = ctx.quads.bind_image(&ctx.gpu.device, &img);
-    let run = |color| {
+    // brightness, contrast, saturation, hue, red, green, blue
+    let run = |params: [f32; 7]| {
         let out = ctx.render_with(
             TestPattern::Off,
             full(),
             1.0,
             QuadFill::Image(&b),
             extra(ExtraM5 {
-                color,
+                chain: vec![builtin("color")],
+                params: params.to_vec(),
                 ..Default::default()
             }),
         );
         px(&out, 256, 256)
     };
-    let gray = run(ColorAdjust {
-        saturation: 0.0,
-        ..Default::default()
-    });
+    let gray = run([0.0, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0]);
     assert!(
         gray[0].abs_diff(gray[1]) <= 1 && gray[1].abs_diff(gray[2]) <= 1,
         "{gray:?}"
     );
-    let bright = run(ColorAdjust {
-        brightness: 0.2,
-        ..Default::default()
-    });
+    let bright = run([0.2, 1.0, 1.0, 0.0, 1.0, 1.0, 1.0]);
     assert!(bright[1].abs_diff(151) <= 2, "{bright:?}");
-    let red_off = run(ColorAdjust {
-        gain: [0.0, 1.0, 1.0],
-        ..Default::default()
-    });
+    let red_off = run([0.0, 1.0, 1.0, 0.0, 0.0, 1.0, 1.0]);
     assert_eq!(red_off[0], 0);
-    let hue = run(ColorAdjust {
-        hue: 120.0,
-        ..Default::default()
-    });
+    let hue = run([0.0, 1.0, 1.0, 120.0, 1.0, 1.0, 1.0]);
     // A 120° hue turn moves the dominant channel from red to green.
     assert!(hue[1] > hue[0] && hue[1] > hue[2], "{hue:?}");
 }
@@ -582,17 +597,15 @@ fn one_pixel(ctx: &Ctx, rgba: [u8; 4]) -> rustmap_render::ImageBinding {
 fn posterize_quantizes_each_channel() {
     let Some(ctx) = ctx() else { return };
     let b = one_pixel(&ctx, [200, 100, 50, 255]);
-    let run = |bits| {
+    let run = |bits: u8| {
         let out = ctx.render_with(
             TestPattern::Off,
             full(),
             1.0,
             QuadFill::Image(&b),
             extra(ExtraM5 {
-                color: ColorAdjust {
-                    posterize: bits,
-                    ..Default::default()
-                },
+                chain: vec![builtin("posterize")],
+                params: vec![f32::from(bits)],
                 ..Default::default()
             }),
         );
@@ -614,17 +627,19 @@ fn posterize_quantizes_each_channel() {
 fn shader_filters_run_and_read_their_knobs() {
     let Some(ctx) = ctx() else { return };
     let b = one_pixel(&ctx, [200, 100, 50, 255]);
-    let filter = "fn effect(color: vec4<f32>, uv: vec2<f32>, src_uv: vec2<f32>) -> vec4<f32> {\n    \
+    let filter = "// @param amount 0 1 0\nfn effect(color: vec4<f32>, uv: vec2<f32>, src_uv: vec2<f32>) -> vec4<f32> {\n    \
                   let inv = vec4<f32>(vec3<f32>(1.0) - color.rgb, color.a);\n    \
-                  return mix(color, inv, rm_param(0u)) * vec4<f32>(1.0, 1.0, rm_sample(src_uv).r, 1.0);\n}";
+                  return mix(color, inv, rm_param(0u)) * vec4<f32>(1.0, 1.0, rm_sample(src_uv).r, p_amount());\n}";
     let out = ctx.render_with(
         TestPattern::Off,
         full(),
         1.0,
         QuadFill::Image(&b),
         extra(ExtraM5 {
-            filter: Some(filter.into()),
-            params: [1.0, 0.0, 0.0, 0.0],
+            // Posterize first (8 bit: no change), then this one: its
+            // parameter is the second value of the chain.
+            chain: vec![builtin("posterize"), ("mine".into(), filter.into())],
+            params: vec![8.0, 1.0],
             ..Default::default()
         }),
     );
@@ -637,37 +652,49 @@ fn shader_filters_run_and_read_their_knobs() {
 #[test]
 fn broken_shader_filters_report_their_own_line() {
     let Some(ctx) = ctx() else { return };
+    let broken = (
+        "mine".to_owned(),
+        "// my filter\nfn effect(color: vec4<f32>, uv: vec2<f32>, src_uv: vec2<f32>) -> vec4<f32> {\n    return nope(color);\n}".to_owned(),
+    );
     let err = ctx
         .quads
-        .compile_filter(
-            &ctx.gpu.device,
-            "// my filter\nfn effect(color: vec4<f32>, uv: vec2<f32>, src_uv: vec2<f32>) -> vec4<f32> {\n    return nope(color);\n}",
-        )
+        .compile_chain(&ctx.gpu.device, &chain(&[builtin("invert"), broken]))
         .err()
         .expect("must fail");
-    assert!(err.starts_with("line 3"), "{err}");
+    assert!(err.starts_with("mine line 3"), "{err}");
     let err = ctx
         .quads
-        .compile_filter(&ctx.gpu.device, "fn other() {}")
+        .compile_chain(
+            &ctx.gpu.device,
+            &chain(&[("x".into(), "fn other() {}".into())]),
+        )
         .err()
         .expect("needs fn effect");
     assert!(err.contains("fn effect"), "{err}");
 }
 
 #[test]
-fn example_shader_filters_compile() {
+fn built_in_shaders_compile_alone_and_chained() {
     let Some(ctx) = ctx() else { return };
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/shaders");
-    let mut n = 0;
+    let mut all = Vec::new();
     for entry in std::fs::read_dir(&dir).expect("assets/shaders") {
         let path = entry.unwrap().path();
         if path.extension().is_some_and(|e| e == "wgsl") {
-            let src = std::fs::read_to_string(&path).unwrap();
-            if let Err(err) = ctx.quads.compile_filter(&ctx.gpu.device, &src) {
-                panic!("{}: {err}", path.display());
+            let id = rustmap_core::shaders::shader_id(&path);
+            let shader = builtin(&id);
+            if let Err(err) = ctx
+                .quads
+                .compile_chain(&ctx.gpu.device, &chain(std::slice::from_ref(&shader)))
+            {
+                panic!("{id}: {err}");
             }
-            n += 1;
+            all.push(shader);
         }
     }
-    assert!(n >= 6);
+    assert!(all.len() >= 8);
+    // All of them in one chain: names don't clash, parameters fit.
+    ctx.quads
+        .compile_chain(&ctx.gpu.device, &chain(&all))
+        .expect("whole chain");
 }

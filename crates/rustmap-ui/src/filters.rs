@@ -1,10 +1,10 @@
 //! Column 3, filters: what happens to the picture between taking a region of
-//! an input and placing it on an output. For now the selected input's video
-//! transport and the selected surface's color adjustments.
+//! an input and placing it on an output. The selected input's video
+//! transport, the selected surface's shader chain, and the shader library.
 
-use rustmap_core::{MediaSource, Project};
+use rustmap_core::{FilterUse, MediaSource, Project};
 
-use crate::{UiAction, UiState, ViewData};
+use crate::{ShaderEntry, ShaderOrigin, UiAction, UiState, ViewData};
 
 pub(crate) fn show(
     ui: &mut egui::Ui,
@@ -31,123 +31,240 @@ pub(crate) fn show(
     ui.add_space(8.0);
     ui.separator();
 
-    // ---- the selected surface ----
-    let Some(id) = state
+    // ---- the selected surface's chain ----
+    match state
         .selected_surface
         .filter(|id| project.surface(*id).is_some())
-    else {
-        ui.weak("Select a surface (a region in column 2, or in column 5) to filter it.");
-        return;
-    };
-    let surface = project.surface_mut(id).expect("checked");
-    ui.label(egui::RichText::new(format!("Surface: {}", surface.name)).strong());
-    ui.weak("Applied in this order: shader, color, posterize.");
-    ui.add_space(4.0);
-
-    egui::CollapsingHeader::new(egui::RichText::new("Shader").strong())
-        .id_salt("filter_shader")
-        .default_open(true)
-        .show(ui, |ui| shader(ui, surface, view, actions));
-    egui::CollapsingHeader::new(egui::RichText::new("Color").strong())
-        .id_salt("filter_color")
-        .default_open(true)
-        .show(ui, |ui| {
-            crate::surfaces::color_editor(ui, &mut surface.color)
-        });
-    egui::CollapsingHeader::new(egui::RichText::new("Posterize").strong())
-        .id_salt("filter_posterize")
-        .default_open(true)
-        .show(ui, |ui| posterize(ui, &mut surface.color.posterize));
-}
-
-/// A WGSL file and its four knobs.
-fn shader(
-    ui: &mut egui::Ui,
-    surface: &mut rustmap_core::Surface,
-    view: &ViewData<'_>,
-    actions: &mut Vec<UiAction>,
-) {
-    let id = surface.id;
-    let Some(filter) = &mut surface.shader else {
-        ui.horizontal(|ui| {
-            ui.weak("None");
-            if ui
-                .button("Choose file…")
-                .on_hover_text("A WGSL shader filter (examples come with RUSTMAP)")
-                .clicked()
-            {
-                actions.push(UiAction::PickShader(id));
-            }
-        });
-        return;
-    };
-    let name = filter
-        .path
-        .file_name()
-        .map_or_else(|| "?".into(), |n| n.to_string_lossy().into_owned());
-    let mut remove = false;
-    ui.horizontal(|ui| {
-        ui.label(egui::RichText::new(&name).monospace())
-            .on_hover_text(filter.path.display().to_string());
-        if ui.small_button("Change…").clicked() {
-            actions.push(UiAction::PickShader(id));
-        }
-        if ui.small_button("Remove").clicked() {
-            remove = true;
-        }
-    });
-    match view.shader_errors.get(&filter.path) {
-        Some(err) => {
-            ui.colored_label(crate::editor::ERROR, err);
-            ui.weak("Fix the file and save it: it reloads by itself.");
-        }
+    {
+        Some(id) => chain(ui, project, id, view),
         None => {
-            ui.weak("Reloads when the file is saved.");
+            ui.weak("Select a surface (a region in column 2, or in column 5) to give it shaders.");
         }
     }
-    egui::Grid::new("shader_params")
-        .num_columns(2)
-        .spacing([8.0, 4.0])
-        .show(ui, |ui| {
-            for (i, label) in ["A", "B", "C", "D"].iter().enumerate() {
-                ui.label(*label)
-                    .on_hover_text(format!("rm_param({i}u) in the shader"));
-                ui.add(egui::Slider::new(&mut filter.params[i], 0.0..=1.0));
-                ui.end_row();
-            }
+
+    ui.add_space(10.0);
+    ui.separator();
+    library(ui, view, actions);
+}
+
+fn find<'a>(view: &'a ViewData<'_>, id: &str) -> Option<&'a ShaderEntry> {
+    view.shaders.iter().find(|e| e.info.id == id)
+}
+
+/// The surface's shaders, top to bottom, each with its sliders.
+fn chain(
+    ui: &mut egui::Ui,
+    project: &mut Project,
+    id: rustmap_core::SurfaceId,
+    view: &ViewData<'_>,
+) {
+    let Some(surface) = project.surface_mut(id) else {
+        return;
+    };
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new(format!("Shaders: {}", surface.name)).strong());
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.menu_button("+ Add", |ui| {
+                ui.set_min_width(200.0);
+                let mut last = None;
+                for entry in view.shaders {
+                    if last.is_some() && last != Some(entry.origin) {
+                        ui.separator();
+                    }
+                    last = Some(entry.origin);
+                    let label = if entry.error.is_some() {
+                        format!("{} (broken)", entry.info.name)
+                    } else {
+                        entry.info.name.clone()
+                    };
+                    let r = ui.button(label);
+                    let r = if entry.info.description.is_empty() {
+                        r
+                    } else {
+                        r.on_hover_text(&entry.info.description)
+                    };
+                    if r.clicked() {
+                        surface.filters.push(FilterUse::new(&entry.info));
+                        ui.close();
+                    }
+                }
+            })
+            .response
+            .on_hover_text("Add a shader to this surface's chain");
         });
-    if remove {
-        surface.shader = None;
+    });
+    if let Some(err) = view.shader_errors.get(&id) {
+        ui.colored_label(crate::editor::ERROR, err);
+        ui.weak("The surface draws without its shaders until this is fixed.");
+    }
+    if surface.filters.is_empty() {
+        ui.weak("No shaders: the picture goes through unchanged. + Add puts one on.");
+        return;
+    }
+    ui.weak("Run top to bottom.");
+
+    let n = surface.filters.len();
+    let mut remove = None;
+    let mut swap = None;
+    for (i, f) in surface.filters.iter_mut().enumerate() {
+        let entry = find(view, &f.shader);
+        let name = entry.map_or_else(|| f.shader.clone(), |e| e.info.name.clone());
+        ui.push_id(("filter", i), |ui| {
+            egui::Frame::group(ui.style()).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut f.enabled, "").on_hover_text("On / off");
+                    let title = ui.label(egui::RichText::new(&name).strong());
+                    if let Some(e) = entry
+                        && !e.info.description.is_empty()
+                    {
+                        title.on_hover_text(&e.info.description);
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui
+                            .small_button("🗑")
+                            .on_hover_text("Remove from chain")
+                            .clicked()
+                        {
+                            remove = Some(i);
+                        }
+                        if ui
+                            .add_enabled(i + 1 < n, egui::Button::new("v").small())
+                            .on_hover_text("Move down")
+                            .clicked()
+                        {
+                            swap = Some((i, i + 1));
+                        }
+                        if ui
+                            .add_enabled(i > 0, egui::Button::new("^").small())
+                            .on_hover_text("Move up")
+                            .clicked()
+                        {
+                            swap = Some((i - 1, i));
+                        }
+                    });
+                });
+                let Some(entry) = entry else {
+                    ui.colored_label(
+                        crate::editor::ERROR,
+                        format!("“{}” isn't in the shader library.", f.shader),
+                    );
+                    return;
+                };
+                f.fit(&entry.info);
+                ui.add_enabled_ui(f.enabled, |ui| {
+                    egui::Grid::new("params")
+                        .num_columns(2)
+                        .spacing([8.0, 3.0])
+                        .show(ui, |ui| {
+                            for (j, p) in entry.info.params.iter().enumerate() {
+                                ui.label(&p.label).on_hover_text(format!("p_{}()", p.id));
+                                let mut slider = egui::Slider::new(&mut f.params[j], p.min..=p.max);
+                                if p.step > 0.0 {
+                                    slider = slider.step_by(f64::from(p.step));
+                                }
+                                if p.step >= 1.0 {
+                                    slider = slider.fixed_decimals(0);
+                                }
+                                if ui
+                                    .add(slider)
+                                    .on_hover_text(
+                                        "Double-click the number to type; right-click: default",
+                                    )
+                                    .secondary_clicked()
+                                {
+                                    f.params[j] = p.default;
+                                }
+                                ui.end_row();
+                            }
+                        });
+                });
+            });
+        });
+    }
+    if let Some((a, b)) = swap {
+        surface.filters.swap(a, b);
+    }
+    if let Some(i) = remove {
+        surface.filters.remove(i);
     }
 }
 
-/// Bits per channel: off, or 1..=8 with quick picks.
-fn posterize(ui: &mut egui::Ui, bits: &mut u8) {
-    ui.horizontal(|ui| {
-        ui.selectable_value(bits, 0, "Off");
-        for b in [2u8, 6, 8] {
-            ui.selectable_value(bits, b, format!("{b}-bit"))
-                .on_hover_text(format!("{} levels per channel", 1u32 << b));
-        }
-    });
-    let mut on = *bits > 0;
-    let mut value = (*bits).max(1);
-    ui.horizontal(|ui| {
-        if ui
-            .add(
-                egui::Slider::new(&mut value, 1..=8)
-                    .suffix(" bit")
-                    .text("per channel"),
-            )
-            .changed()
-        {
-            on = true;
-        }
-    });
-    if on {
-        *bits = value;
-    }
-    if *bits == 8 {
-        ui.weak("8 bit is the output's own depth: no visible change.");
-    }
+/// Every shader there is, and adding or removing your own.
+fn library(ui: &mut egui::Ui, view: &ViewData<'_>, actions: &mut Vec<UiAction>) {
+    egui::CollapsingHeader::new(egui::RichText::new("Shader library").strong())
+        .id_salt("shader_library")
+        .default_open(false)
+        .show(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                if ui
+                    .button("Add file…")
+                    .on_hover_text("Copy a .wgsl shader into your library: every show can use it")
+                    .clicked()
+                {
+                    actions.push(UiAction::AddShaderFile);
+                }
+                if ui
+                    .button("New shader…")
+                    .on_hover_text("Start a shader from a template in your library and open it")
+                    .clicked()
+                {
+                    actions.push(UiAction::NewShader);
+                }
+                if ui.button("Open folder").clicked() {
+                    actions.push(UiAction::OpenShaderFolder);
+                }
+            });
+            ui.weak("Library files reload when saved.");
+            ui.add_space(4.0);
+            for e in view.shaders {
+                ui.horizontal(|ui| {
+                    let tag = match e.origin {
+                        ShaderOrigin::BuiltIn => "built in",
+                        ShaderOrigin::Library => "library",
+                        ShaderOrigin::Show => "this show",
+                    };
+                    let name = ui.label(&e.info.name);
+                    if !e.info.description.is_empty() {
+                        name.on_hover_text(&e.info.description);
+                    }
+                    ui.weak(tag);
+                    ui.with_layout(
+                        egui::Layout::right_to_left(egui::Align::Center),
+                        |ui| match e.origin {
+                            ShaderOrigin::Library => {
+                                if ui
+                                    .small_button("🗑")
+                                    .on_hover_text("Delete from your library")
+                                    .clicked()
+                                {
+                                    actions.push(UiAction::RemoveShader(e.info.id.clone()));
+                                }
+                                if let Some(path) = &e.path
+                                    && ui
+                                        .small_button("Edit")
+                                        .on_hover_text("Open the file")
+                                        .clicked()
+                                {
+                                    actions.push(UiAction::OpenShader(path.clone()));
+                                }
+                            }
+                            ShaderOrigin::Show => {
+                                if ui
+                                    .small_button("Keep")
+                                    .on_hover_text("Add to your library so every show can use it")
+                                    .clicked()
+                                {
+                                    actions.push(UiAction::KeepShader(e.info.id.clone()));
+                                }
+                            }
+                            ShaderOrigin::BuiltIn => {}
+                        },
+                    );
+                });
+                if let Some(err) = &e.error {
+                    ui.colored_label(crate::editor::ERROR, err);
+                }
+            }
+        });
 }

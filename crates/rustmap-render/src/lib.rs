@@ -8,6 +8,7 @@
 //! so the operator always sees exactly the pixels the projector gets.
 
 mod blit;
+mod chain;
 mod edge_blend;
 mod gpu;
 mod image;
@@ -20,6 +21,7 @@ mod target;
 mod test_pattern;
 
 pub use blit::{Blitter, fit_rect};
+pub use chain::ChainShader;
 pub use edge_blend::{EdgeBlendRenderer, EdgeBlendState};
 pub use gpu::{Gpu, GpuError};
 pub use image::GpuImage;

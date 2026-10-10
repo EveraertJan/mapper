@@ -1,5 +1,5 @@
 use std::collections::{BTreeMap, HashMap};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -73,7 +73,7 @@ struct Graphics {
     overlay: OverlayRenderer,
     media: MediaManager,
     quad_states: HashMap<SurfaceId, QuadState>,
-    shaders: crate::shaders::ShaderCache,
+    shaders: crate::shaders::ShaderLibrary,
     control: ControlWindow,
     outputs: BTreeMap<OutputId, OutputRuntime>,
     previews: HashMap<OutputId, egui::TextureId>,
@@ -160,7 +160,7 @@ impl App {
             overlay: OverlayRenderer::new(&gpu.device),
             media: MediaManager::default(),
             quad_states: HashMap::new(),
-            shaders: crate::shaders::ShaderCache::default(),
+            shaders: crate::shaders::ShaderLibrary::default(),
             gpu,
             control,
             outputs: BTreeMap::new(),
@@ -275,27 +275,43 @@ impl App {
     }
 
     /// Saves a DMX fixture type to a file (defaults to the user's fixture library folder).
-    /// Lets the user choose a WGSL shader filter for a surface.
-    fn pick_shader(&mut self, id: SurfaceId) {
-        let current = self
-            .project
-            .surface(id)
-            .and_then(|s| s.shader.as_ref())
-            .and_then(|f| f.path.parent().map(Path::to_path_buf));
-        let mut dialog = rfd::FileDialog::new()
-            .set_title("Choose a shader filter")
-            .add_filter("WGSL shader", &["wgsl"]);
-        if let Some(dir) = current.or_else(crate::shaders::examples_dir) {
-            dialog = dialog.set_directory(dir);
-        }
-        let Some(path) = dialog.pick_file() else {
-            return;
-        };
-        if let Some(s) = self.project.surface_mut(id) {
-            match &mut s.shader {
-                Some(f) => f.path = path,
-                None => s.shader = Some(rustmap_core::ShaderFilter::new(path)),
+    /// Shader library actions from the Filters column.
+    fn shader_action(&mut self, action: UiAction) {
+        let Some(gfx) = &mut self.gfx else { return };
+        let lib = &mut gfx.shaders;
+        let result = match action {
+            UiAction::AddShaderFile => {
+                let mut dialog = rfd::FileDialog::new()
+                    .set_title("Add a shader to your library")
+                    .add_filter("WGSL shader", &["wgsl"]);
+                if let Some(dir) = dirs::home_dir() {
+                    dialog = dialog.set_directory(dir);
+                }
+                match dialog.pick_file() {
+                    Some(path) => lib.add_file(&path).map(|_| ()),
+                    None => Ok(()),
+                }
             }
+            UiAction::NewShader => lib.create().map(|path| crate::shaders::reveal(&path)),
+            UiAction::OpenShaderFolder => {
+                let dir = lib.dir().to_path_buf();
+                let _ = std::fs::create_dir_all(&dir);
+                crate::shaders::reveal(&dir);
+                Ok(())
+            }
+            UiAction::OpenShader(path) => {
+                crate::shaders::reveal(&path);
+                Ok(())
+            }
+            UiAction::RemoveShader(id) => lib.remove(&id),
+            UiAction::KeepShader(id) => match lib.source(&id).map(str::to_owned) {
+                Some(src) => lib.write(&id, &src).map(|_| ()),
+                None => Ok(()),
+            },
+            _ => Ok(()),
+        };
+        if let Err(err) = result {
+            show_error("Shader library", &err);
         }
     }
 
@@ -442,7 +458,12 @@ impl App {
             UiAction::ImportImages { assign_to } => self.pick_images(assign_to),
             UiAction::ImportDmxTypes => self.import_dmx_types(),
             UiAction::ExportDmxType(id) => self.export_dmx_type(id),
-            UiAction::PickShader(id) => self.pick_shader(id),
+            a @ (UiAction::AddShaderFile
+            | UiAction::NewShader
+            | UiAction::OpenShaderFolder
+            | UiAction::OpenShader(_)
+            | UiAction::RemoveShader(_)
+            | UiAction::KeepShader(_)) => self.shader_action(a),
             UiAction::GoCue(id) => {
                 let now = self.start.elapsed().as_secs_f64();
                 self.led.go(&mut self.project, id, now);
@@ -774,7 +795,8 @@ impl App {
                 dmx: &self.led.view,
                 osc: &self.osc.view,
                 video: &gfx.media.video_times,
-                shader_errors: &gfx.shaders.errors,
+                shaders: &gfx.shaders.entries,
+                shader_errors: &gfx.shaders.surface_errors,
                 stats: &self.stats,
                 adapter: &adapter,
                 profiler_enabled: self.profiler.is_some(),
@@ -817,6 +839,8 @@ impl App {
         // 3. Render.
         let Some(gfx) = &mut self.gfx else { return };
         let time = self.start.elapsed().as_secs_f32();
+        gfx.shaders
+            .prepare(&gfx.quads, &gfx.gpu.device, &mut self.project);
         let mut encoder = gfx
             .gpu
             .device
@@ -840,14 +864,6 @@ impl App {
                 .surfaces_on(config.id)
                 .filter(|s| s.visible)
                 .collect();
-            gfx.shaders.refresh(
-                &gfx.quads,
-                &gfx.gpu.device,
-                self.project
-                    .surfaces
-                    .iter()
-                    .filter_map(|s| s.shader.as_ref().map(|f| f.path.as_path())),
-            );
             // Built first so the draws can borrow them.
             let meshes: Vec<Option<MeshGrid>> = surfaces
                 .iter()
@@ -865,6 +881,7 @@ impl App {
                         Some(binding) => QuadFill::Image(binding),
                         None => QuadFill::Checker,
                     };
+                    let chain = gfx.shaders.chain(s.id);
                     Some(QuadDraw {
                         state: gfx.quad_states.get(&s.id)?,
                         corners: rustmap_geom::quad_from_arrays(&s.corners),
@@ -875,9 +892,9 @@ impl App {
                         shape: s.shape,
                         input: rustmap_geom::quad_from_arrays(&s.input),
                         mask: s.mask.as_ref(),
-                        color: s.color,
-                        filter: s.shader.as_ref().and_then(|f| gfx.shaders.get(&f.path)),
-                        params: s.shader.as_ref().map_or([0.0; 4], |f| f.params),
+                        filter: chain.map(|c| c.0),
+                        params: chain
+                            .map_or([0.0; rustmap_core::shaders::MAX_CHAIN_PARAMS], |c| c.1),
                         time,
                     })
                 })

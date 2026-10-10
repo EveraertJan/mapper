@@ -1,4 +1,7 @@
-use rustmap_core::{BlendMode, ColorAdjust, MASK_MAX_POINTS, Mask, Shape};
+use rustmap_core::shaders::MAX_CHAIN_PARAMS;
+use rustmap_core::{BlendMode, MASK_MAX_POINTS, Mask, Shape};
+
+use crate::chain::ChainShader;
 use rustmap_geom::{MeshGrid, Quad, corner_weights, square_to_quad};
 use wgpu::util::DeviceExt;
 
@@ -18,20 +21,18 @@ struct Uniforms {
     mask_count: u32,
     mask_feather: f32,
     mask_invert: u32,
-    brightness: f32,
-    contrast: f32,
-    saturation: f32,
-    hue: f32,
-    posterize: f32,
     time: f32,
-    gain: [f32; 4],
-    params: [f32; 4],
+    _pad: f32,
+    /// Shader chain parameters, four per vec4.
+    params: [[f32; 4]; MAX_CHAIN_PARAMS / 4],
     input: [[f32; 4]; 3],
     /// Two mask points per vec4.
     mask: [[f32; 4]; MASK_MAX_POINTS / 2],
 }
 
-const _: () = assert!(std::mem::size_of::<Uniforms>() == 128 + 16 * MASK_MAX_POINTS / 2);
+const _: () = assert!(
+    std::mem::size_of::<Uniforms>() == 32 + 4 * MAX_CHAIN_PARAMS + 48 + 16 * MASK_MAX_POINTS / 2
+);
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
@@ -78,11 +79,10 @@ pub struct QuadDraw<'a> {
     /// Region of the media to show (media uv space, same corner order).
     pub input: Quad,
     pub mask: Option<&'a Mask>,
-    pub color: ColorAdjust,
-    /// A compiled shader filter, or `None` for the plain pipeline.
+    /// The compiled shader chain, or `None` for the plain pipeline.
     pub filter: Option<&'a FilterPipelines>,
-    /// The filter's four knobs.
-    pub params: [f32; 4],
+    /// The chain's parameter values, one after the other.
+    pub params: [f32; MAX_CHAIN_PARAMS],
     /// Seconds, for animated filters.
     pub time: f32,
 }
@@ -110,9 +110,8 @@ impl<'a> QuadDraw<'a> {
                 rustmap_geom::Vec2::new(0.0, 1.0),
             ],
             mask: None,
-            color: ColorAdjust::default(),
             filter: None,
-            params: [0.0; 4],
+            params: [0.0; MAX_CHAIN_PARAMS],
             time: 0.0,
         }
     }
@@ -232,21 +231,19 @@ impl QuadRenderer {
         })
     }
 
-    /// Compiles a shader filter: WGSL defining
-    /// `fn effect(color: vec4<f32>, uv: vec2<f32>, src_uv: vec2<f32>) -> vec4<f32>`.
-    /// Errors (with line numbers in the filter's own file) instead of panics.
-    pub fn compile_filter(
+    /// Compiles a surface's shader chain into pipelines. Errors (naming the
+    /// shader and its own line) instead of panics.
+    pub fn compile_chain(
         &self,
         device: &wgpu::Device,
-        filter_source: &str,
+        chain: &[ChainShader<'_>],
     ) -> Result<FilterPipelines, String> {
-        if !filter_source.contains("fn effect(") {
-            return Err("the file must define fn effect(color: vec4<f32>, uv: vec2<f32>, src_uv: vec2<f32>) -> vec4<f32>".into());
-        }
-        let source = filter_shader_source(filter_source);
-        validate_filter(&source, filter_source.lines().count())?;
+        let first = filter_first_line();
+        let (body, lines) = crate::chain::compose(chain, first)?;
+        let source = filter_shader_source(&body);
+        validate_filter(&source, &lines)?;
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("shader filter"),
+            label: Some("shader chain"),
             source: wgpu::ShaderSource::Wgsl(source.into()),
         });
         Ok(FilterPipelines {
@@ -389,7 +386,7 @@ fn filter_shader_source(filter_source: &str) -> String {
     )
 }
 
-/// Line in the full shader where the filter's own line 1 is.
+/// Line in the full shader where the composed chain starts.
 fn filter_first_line() -> usize {
     QUAD_WGSL[..QUAD_WGSL.find(FILTER_BEGIN).expect("filter marker")]
         .lines()
@@ -397,19 +394,11 @@ fn filter_first_line() -> usize {
         + 2
 }
 
-/// Parses and validates a filter shader with naga, so a broken file gives
-/// a message instead of a GPU validation panic.
-fn validate_filter(source: &str, filter_lines: usize) -> Result<(), String> {
+/// Parses and validates a composed shader with naga, so a broken file
+/// gives a message instead of a GPU validation panic.
+fn validate_filter(source: &str, lines: &crate::chain::LineMap) -> Result<(), String> {
     use wgpu::naga;
-    let first = filter_first_line();
-    let at = |line: u32| {
-        let line = line as usize;
-        if line >= first && line < first + filter_lines {
-            format!("line {}", line + 1 - first)
-        } else {
-            "built-in code".to_owned()
-        }
-    };
+    let at = |line: u32| lines.describe(line as usize);
     let module = naga::front::wgsl::parse_str(source).map_err(|e| {
         let place = e
             .location(source)
@@ -501,7 +490,10 @@ fn uniforms(quad: &QuadDraw<'_>) -> Uniforms {
         }
         _ => (0, 0.0, 0),
     };
-    let c = quad.color;
+    let mut params = [[0.0; 4]; MAX_CHAIN_PARAMS / 4];
+    for (i, v) in quad.params.iter().enumerate() {
+        params[i / 4][i % 4] = *v;
+    }
     Uniforms {
         opacity: quad.opacity.clamp(0.0, 1.0),
         fill,
@@ -513,18 +505,9 @@ fn uniforms(quad: &QuadDraw<'_>) -> Uniforms {
         mask_count,
         mask_feather,
         mask_invert,
-        brightness: c.brightness,
-        contrast: c.contrast,
-        saturation: c.saturation,
-        hue: c.hue.to_radians(),
-        posterize: if (1..=8).contains(&c.posterize) {
-            f32::from(1u16 << c.posterize)
-        } else {
-            0.0
-        },
         time: quad.time,
-        gain: [c.gain[0], c.gain[1], c.gain[2], 1.0],
-        params: quad.params,
+        _pad: 0.0,
+        params,
         input: [
             m.x_axis.extend(0.0).to_array(),
             m.y_axis.extend(0.0).to_array(),

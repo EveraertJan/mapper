@@ -1,4 +1,4 @@
-use rustmap_core::{BlendMode, ColorAdjust, MASK_MAX_POINTS, Mask, Mesh, Project, Shape, Surface};
+use rustmap_core::{BlendMode, MASK_MAX_POINTS, Mask, Mesh, Project, Shape, Surface};
 use rustmap_geom::{MeshGrid, Vec2, centered_rect, is_convex, quad_from_arrays, quad_to_arrays};
 
 use crate::warp::{corner_handle, set_warp_handle, warp_handles};
@@ -223,8 +223,12 @@ pub(crate) fn inspector(
     egui::CollapsingHeader::new("Mask")
         .default_open(surface.mask.is_some())
         .show(ui, |ui| mask_editor(ui, surface, state));
-    if !surface.color.is_identity() {
-        ui.weak("Color adjusted in Filters (column 3)");
+    if !surface.filters.is_empty() {
+        ui.weak(format!(
+            "{} shader{} in Filters (column 3)",
+            surface.filters.len(),
+            if surface.filters.len() == 1 { "" } else { "s" }
+        ));
     }
 
     if let Some(up) = restack {
@@ -385,38 +389,6 @@ fn mask_editor(ui: &mut egui::Ui, surface: &mut Surface, state: &mut UiState) {
     if remove {
         surface.mask = None;
         state.set_layer(EditLayer::Warp);
-    }
-}
-
-pub(crate) fn color_editor(ui: &mut egui::Ui, color: &mut ColorAdjust) {
-    egui::Grid::new("color")
-        .num_columns(2)
-        .spacing([8.0, 4.0])
-        .show(ui, |ui| {
-            ui.label("Brightness");
-            ui.add(egui::Slider::new(&mut color.brightness, -1.0..=1.0));
-            ui.end_row();
-            ui.label("Contrast");
-            ui.add(egui::Slider::new(&mut color.contrast, 0.0..=2.0));
-            ui.end_row();
-            ui.label("Saturation");
-            ui.add(egui::Slider::new(&mut color.saturation, 0.0..=2.0));
-            ui.end_row();
-            ui.label("Hue");
-            ui.add(egui::Slider::new(&mut color.hue, -180.0..=180.0).suffix("°"));
-            ui.end_row();
-            for (i, name) in ["Red", "Green", "Blue"].iter().enumerate() {
-                ui.label(*name);
-                ui.add(egui::Slider::new(&mut color.gain[i], 0.0..=2.0))
-                    .on_hover_text("Channel gain, e.g. to match projectors");
-                ui.end_row();
-            }
-        });
-    if ui
-        .add_enabled(!color.is_identity(), egui::Button::new("Reset color"))
-        .clicked()
-    {
-        *color = ColorAdjust::default();
     }
 }
 

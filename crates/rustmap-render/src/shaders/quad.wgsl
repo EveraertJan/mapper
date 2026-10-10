@@ -12,14 +12,10 @@ struct Surface {
     mask_count: u32,    // 0 = no mask, else polygon points used
     mask_feather: f32,  // soft edge width in surface uv units
     mask_invert: u32,
-    brightness: f32,
-    contrast: f32,
-    saturation: f32,
-    hue: f32,           // radians
-    posterize: f32,     // levels per channel; < 2 = off
     time: f32,          // seconds, for shader filters
-    gain: vec4<f32>,
-    params: vec4<f32>,  // shader filter knobs
+    _pad: f32,
+    // Shader filter parameters of the whole chain, four per vec4.
+    params: array<vec4<f32>, 8>,
     // Homography from surface uv to media uv (input region), as matrix columns.
     input: array<vec4<f32>, 3>,
     // Mask polygon in surface uv, two points per vec4.
@@ -120,29 +116,6 @@ fn mask_coverage(uv: vec2<f32>) -> f32 {
     return select(cov, 1.0 - cov, q.mask_invert != 0u);
 }
 
-// Gain, brightness, contrast, saturation and hue on a straight (not
-// premultiplied) color.
-fn adjust(c: vec3<f32>) -> vec3<f32> {
-    var rgb = c * q.gain.rgb;
-    rgb = rgb + vec3<f32>(q.brightness);
-    rgb = (rgb - vec3<f32>(0.5)) * q.contrast + vec3<f32>(0.5);
-    let luma = dot(rgb, vec3<f32>(0.2126, 0.7152, 0.0722));
-    rgb = mix(vec3<f32>(luma), rgb, q.saturation);
-    if (q.hue != 0.0) {
-        // Rotate around the gray axis (Rodrigues).
-        let k = vec3<f32>(0.57735);
-        let cs = cos(q.hue);
-        let sn = sin(q.hue);
-        rgb = rgb * cs + cross(k, rgb) * sn + k * dot(k, rgb) * (1.0 - cs);
-    }
-    rgb = clamp(rgb, vec3<f32>(0.0), vec3<f32>(1.0));
-    if (q.posterize >= 2.0) {
-        let steps = q.posterize - 1.0;
-        rgb = floor(rgb * steps + vec3<f32>(0.5)) / steps;
-    }
-    return rgb;
-}
-
 // ---- for shader filters ----
 
 // Seconds since RUSTMAP started.
@@ -150,9 +123,11 @@ fn rm_time() -> f32 {
     return q.time;
 }
 
-// Knob `i` (0..3), 0..1, set in the Filters column.
-fn rm_param(i: u32) -> f32 {
-    return q.params[min(i, 3u)];
+// Parameter `n` of the whole chain (each shader gets its own `rm_param`
+// and `p_<name>` accessors that add their offset).
+fn rm_p(n: u32) -> f32 {
+    let i = min(n, 31u);
+    return q.params[i / 4u][i % 4u];
 }
 
 // The input at media uv `uv` (straight alpha). Safe anywhere in a filter.
@@ -190,7 +165,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         case 2u: { color = vec4<f32>(in.uv, 0.0, 1.0); }
         default: { color = image; }  // premultiplied
     }
-    // Filters work on straight alpha; colors here are premultiplied.
+    // Shader filters work on straight alpha; colors here are premultiplied.
     var straight = vec4<f32>(0.0);
     if (color.a > 0.0) {
         straight = vec4<f32>(color.rgb / color.a, color.a);
@@ -199,6 +174,6 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         straight = effect(straight, in.uv, src_uv);
     }
     let a = clamp(straight.a, 0.0, 1.0);
-    color = vec4<f32>(adjust(straight.rgb) * a, a);
+    color = vec4<f32>(clamp(straight.rgb, vec3<f32>(0.0), vec3<f32>(1.0)) * a, a);
     return color * (q.opacity * mask);
 }

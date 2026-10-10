@@ -108,6 +108,28 @@ pub struct DmxView {
     pub fade: Option<f32>,
 }
 
+/// Where a shader comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShaderOrigin {
+    /// Comes with RUSTMAP.
+    BuiltIn,
+    /// In the user's library folder (every show sees it).
+    Library,
+    /// Only carried by this show (its library on another machine).
+    Show,
+}
+
+/// A shader the UI can offer.
+#[derive(Debug, Clone)]
+pub struct ShaderEntry {
+    pub info: rustmap_core::ShaderInfo,
+    pub origin: ShaderOrigin,
+    /// The file, for library shaders.
+    pub path: Option<std::path::PathBuf>,
+    /// Why it doesn't compile on its own.
+    pub error: Option<String>,
+}
+
 /// OSC input state for the UI.
 #[derive(Debug, Clone, Default)]
 pub struct OscView {
@@ -168,8 +190,10 @@ pub struct ViewData<'a> {
     pub dmx: &'a DmxView,
     pub osc: &'a OscView,
     pub video: &'a HashMap<MediaId, VideoTime>,
-    /// Shader filter files that failed to compile, and why.
-    pub shader_errors: &'a HashMap<std::path::PathBuf, String>,
+    /// Every shader available (built in, library, carried by the show).
+    pub shaders: &'a [ShaderEntry],
+    /// Surfaces whose shader chain isn't running, and why.
+    pub shader_errors: &'a HashMap<SurfaceId, String>,
     pub file: &'a FileView,
     pub stats: &'a FrameStats,
     pub adapter: &'a str,
@@ -217,8 +241,18 @@ pub enum UiAction {
     ImportDmxTypes,
     /// Save a DMX fixture type to a file, to reuse it in other shows.
     ExportDmxType(DmxTypeId),
-    /// Choose a shader filter file for a surface.
-    PickShader(SurfaceId),
+    /// Copy a WGSL file into the shader library.
+    AddShaderFile,
+    /// Create a new shader in the library from a template.
+    NewShader,
+    /// Show the library folder.
+    OpenShaderFolder,
+    /// Open a library shader's file (to edit it).
+    OpenShader(std::path::PathBuf),
+    /// Delete a shader from the library.
+    RemoveShader(String),
+    /// Save a shader this show carries into the library.
+    KeepShader(String),
     /// Go to a cue (fixtures take its values, the output fades).
     GoCue(CueId),
     /// Next (true) or previous cue.

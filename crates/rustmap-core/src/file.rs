@@ -43,15 +43,25 @@ struct ShowFile {
     project: Project,
 }
 
-/// Every shader filter in the show: on surfaces and in cues.
-fn shader_filters(p: &mut Project) -> impl Iterator<Item = &mut crate::ShaderFilter> {
-    let surfaces = p.surfaces.iter_mut().filter_map(|s| s.shader.as_mut());
-    let cues = p
-        .cues
-        .iter_mut()
-        .flat_map(|c| c.surfaces.values_mut())
-        .filter_map(|l| l.shader.as_mut());
-    surfaces.chain(cues)
+/// Shows saved before color became a shader: their color adjustments turn
+/// into a shader chain (on surfaces and in cues).
+pub fn migrate(p: &mut Project) {
+    for s in &mut p.surfaces {
+        if !s.color.is_identity() {
+            let mut chain = crate::shaders::chain_from_color(&s.color);
+            chain.append(&mut s.filters);
+            s.filters = chain;
+            s.color = Default::default();
+        }
+    }
+    for look in p.cues.iter_mut().flat_map(|c| c.surfaces.values_mut()) {
+        if !look.color.is_identity() {
+            let mut chain = crate::shaders::chain_from_color(&look.color);
+            chain.append(&mut look.filters);
+            look.filters = chain;
+            look.color = Default::default();
+        }
+    }
 }
 
 /// Saves `project` to `path` atomically.
@@ -62,9 +72,6 @@ pub fn save(project: &Project, path: &Path) -> Result<(), FileError> {
         if let Some(p) = m.path_mut() {
             *p = relative_to(p, base);
         }
-    }
-    for f in shader_filters(&mut stored) {
-        f.path = relative_to(&f.path, base);
     }
     let file = ShowFile {
         format: FORMAT.to_owned(),
@@ -111,11 +118,7 @@ pub fn load(path: &Path) -> Result<Project, FileError> {
             *p = normalize(&base.join(&*p));
         }
     }
-    for f in shader_filters(&mut project) {
-        if f.path.is_relative() {
-            f.path = normalize(&base.join(&f.path));
-        }
-    }
+    migrate(&mut project);
     Ok(project)
 }
 
@@ -255,8 +258,13 @@ mod tests {
         p.add_ndi("STUDIO (Resolume)");
         p.surface_mut(s).unwrap().media = Some(m);
         p.surface_mut(s).unwrap().corners[2] = [0.91, 0.87];
-        p.surface_mut(s).unwrap().color.posterize = 3;
-        p.surface_mut(s).unwrap().shader = Some(crate::ShaderFilter::new(dir.join("fx/wave.wgsl")));
+        p.surface_mut(s).unwrap().filters = vec![crate::FilterUse {
+            shader: "posterize".into(),
+            enabled: true,
+            params: vec![3.0],
+        }];
+        p.shader_sources
+            .insert("mine".into(), "fn effect() {}".into());
         p.add_fixture(o, crate::Fixture::default_strip());
         let f = p.add_fixture(o, crate::Fixture::default_matrix()).unwrap();
         p.fixture_mut(f).unwrap().patch.protocol = crate::Protocol::Sacn;
@@ -357,5 +365,30 @@ mod tests {
             .map(|e| e.unwrap().file_name())
             .collect();
         assert_eq!(names, vec![std::ffi::OsString::from("show.rustmap")]);
+    }
+
+    #[test]
+    fn old_color_adjustments_load_as_shaders() {
+        // A surface as an older version wrote it: `color`, no `filters`.
+        let mut p = Project::default();
+        let o = p.add_output();
+        let s = p.add_surface(o).unwrap();
+        p.surface_mut(s).unwrap().color.hue = 90.0;
+        let cue = p.record_cue(None);
+        p.cue_mut(cue)
+            .unwrap()
+            .surfaces
+            .get_mut(&s)
+            .unwrap()
+            .color
+            .contrast = 2.0;
+        migrate(&mut p);
+        let f = &p.surface(s).unwrap().filters;
+        assert_eq!(f.len(), 1);
+        assert_eq!(f[0].shader, "color");
+        assert_eq!(f[0].params[3], 90.0);
+        assert!(p.surface(s).unwrap().color.is_identity());
+        let look = &p.cue(cue).unwrap().surfaces[&s];
+        assert_eq!(look.filters[0].params[1], 2.0);
     }
 }

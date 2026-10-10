@@ -59,8 +59,12 @@ fn main() {
                 feather: 0.05,
                 invert: false,
             });
-            surface.color.hue = 120.0;
-            surface.color.saturation = 1.5;
+            // Color shader: brightness, contrast, saturation, hue, R, G, B.
+            surface.filters = vec![rustmap_core::FilterUse {
+                shader: "color".into(),
+                enabled: true,
+                params: vec![0.0, 1.0, 1.5, 120.0, 1.0, 1.0, 1.0],
+            }];
             surface.name = "Bent".into();
             p.output_mut(o).unwrap().edge_blend.right = 0.2;
         }

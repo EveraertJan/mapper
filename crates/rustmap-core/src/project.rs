@@ -57,6 +57,9 @@ pub struct Project {
     pub cues: Vec<Cue>,
     /// OSC remote control.
     pub osc: OscSettings,
+    /// Sources of the custom shaders this show uses (filled in on save), so
+    /// it opens the same on a machine whose library lacks them.
+    pub shader_sources: BTreeMap<String, String>,
     next_output_id: u32,
     next_media_id: u32,
     next_surface_id: u32,
@@ -82,6 +85,7 @@ impl Default for Project {
             dmx_groups: Vec::new(),
             cues: Vec::new(),
             osc: OscSettings::default(),
+            shader_sources: BTreeMap::new(),
             next_output_id: 1,
             next_media_id: 1,
             next_surface_id: 1,

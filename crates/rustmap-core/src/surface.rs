@@ -42,31 +42,13 @@ pub struct Surface {
     /// Polygon mask in surface space, so it follows any warp.
     #[serde(default)]
     pub mask: Option<Mask>,
+    /// Shaders applied to the picture, in order.
     #[serde(default)]
+    pub filters: Vec<crate::shaders::FilterUse>,
+    /// Color adjustment of shows saved before color became a shader; turned
+    /// into `filters` on load and never saved.
+    #[serde(default, skip_serializing)]
     pub color: ColorAdjust,
-    /// A shader file applied to the picture (before the color adjustments).
-    #[serde(default)]
-    pub shader: Option<ShaderFilter>,
-}
-
-/// A WGSL filter from a file: it defines
-/// `fn effect(color: vec4<f32>, uv: vec2<f32>, src_uv: vec2<f32>) -> vec4<f32>`.
-/// See `assets/shaders/README.md`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ShaderFilter {
-    pub path: std::path::PathBuf,
-    /// Four knobs the shader reads with `rm_param(0..3)`, 0..1.
-    #[serde(default)]
-    pub params: [f32; 4],
-}
-
-impl ShaderFilter {
-    pub fn new(path: std::path::PathBuf) -> Self {
-        Self {
-            path,
-            params: [0.5; 4],
-        }
-    }
 }
 
 /// A warp grid: `cols × rows` control points, row-major, in normalized output space.
@@ -248,8 +230,8 @@ impl Surface {
             input: Self::FULL,
             mesh: None,
             mask: None,
+            filters: Vec::new(),
             color: ColorAdjust::default(),
-            shader: None,
         }
     }
 
